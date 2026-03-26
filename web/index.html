@@ -930,6 +930,7 @@
       this.properties = {
         loop_count: 5,
         step_pause_sec: 0.3,
+        loop_start_wait_sec: 0.6,
         continue_on_error: false,
         remote_dir: "/sdcard/adbflow",
         prefix: "loop_capture",
@@ -941,7 +942,7 @@
         capture_pause_sec: 0.2,
         steps: JSON.stringify(
           [
-            { type: "Tap", name: "进入详情", x: 600, y: 1520 },
+            { type: "Tap", name: "进入详情", x: 600, y: 1520, repeat: 2, interval_sec: 0.12 },
             { type: "Wait", name: "等待详情页", duration_sec: 0.8 },
             { type: "Screenshot", name: "截图", prefix: "detail" },
             { type: "Tap", name: "左上返回", x: 120, y: 228 },
@@ -955,12 +956,13 @@
       makeIO(this, true);
       this.addWidget("number", "循环次数", this.properties.loop_count, (v) => this.properties.loop_count = Number(v));
       this.addWidget("number", "步骤间隔(秒)", this.properties.step_pause_sec, (v) => this.properties.step_pause_sec = Number(v));
+      this.addWidget("number", "每轮开始等待(秒)", this.properties.loop_start_wait_sec, (v) => this.properties.loop_start_wait_sec = Number(v));
       this.addWidget("toggle", "步骤失败继续", this.properties.continue_on_error, (v) => this.properties.continue_on_error = !!v);
       this.addWidget("text", "默认手机目录", this.properties.remote_dir, (v) => this.properties.remote_dir = v);
       this.addWidget("text", "默认截图前缀", this.properties.prefix, (v) => this.properties.prefix = v);
       this.addWidget("button", "编辑步骤(多行)", "", () => openLoopStepsEditor(this));
       this.__stepsPreviewWidget = this.addWidget("text", "步骤摘要", buildLoopStepsPreview(this.properties.steps), () => {});
-      this.size = [380, 250];
+      this.size = [380, 270];
     }
 
     function PullNode() {
@@ -1399,9 +1401,10 @@
       } else if (ct === "LoopSequence") {
         if (widgets[0]) widgets[0].value = Number(node.properties.loop_count ?? 5);
         if (widgets[1]) widgets[1].value = Number(node.properties.step_pause_sec ?? 0.3);
-        if (widgets[2]) widgets[2].value = !!node.properties.continue_on_error;
-        if (widgets[3]) widgets[3].value = node.properties.remote_dir || "/sdcard/adbflow";
-        if (widgets[4]) widgets[4].value = node.properties.prefix || "loop_capture";
+        if (widgets[2]) widgets[2].value = Number(node.properties.loop_start_wait_sec ?? 0.6);
+        if (widgets[3]) widgets[3].value = !!node.properties.continue_on_error;
+        if (widgets[4]) widgets[4].value = node.properties.remote_dir || "/sdcard/adbflow";
+        if (widgets[5]) widgets[5].value = node.properties.prefix || "loop_capture";
         syncLoopStepsPreview(node);
       } else if (ct === "PullToPC") {
         if (widgets[0]) widgets[0].value = node.properties.save_dir || "outputs/screenshots";
@@ -1673,7 +1676,7 @@
       const current = String(textarea.value || "").trim();
       if (current) return;
       const template = [
-        { type: "Tap", name: "进入详情", x: 600, y: 1520 },
+        { type: "Tap", name: "进入详情", x: 600, y: 1520, repeat: 2, interval_sec: 0.12 },
         { type: "Wait", name: "等待详情页", duration_sec: 0.8 },
         { type: "Screenshot", name: "截图", prefix: "detail" },
         { type: "Tap", name: "左上返回", x: 120, y: 228 },

@@ -289,6 +289,7 @@ class LoopSequenceNode(BaseNode):
         device_id = self._device_id(payload)
         loop_count = max(1, self._as_int(inputs.get("loop_count"), 1))
         step_pause_sec = max(0.0, self._as_float(inputs.get("step_pause_sec"), 0.3))
+        loop_start_wait_sec = max(0.0, self._as_float(inputs.get("loop_start_wait_sec"), 0.0))
         continue_on_error = self._as_bool(inputs.get("continue_on_error"), False)
         steps = _parse_loop_steps(inputs.get("steps"))
         if not steps:
@@ -313,6 +314,11 @@ class LoopSequenceNode(BaseNode):
             f"[循环序列节点] 开始执行：轮次={loop_count}，步骤数={len(steps)}，异常处理={'继续' if continue_on_error else '中断'}"
         )
         for loop_index in range(loop_count):
+            if loop_index > 0 and loop_start_wait_sec > 0:
+                time.sleep(loop_start_wait_sec)
+                ctx.log(
+                    f"[循环序列节点] 第 {loop_index + 1}/{loop_count} 轮开始前等待 {loop_start_wait_sec:.2f} 秒"
+                )
             ctx.log(f"[循环序列节点] 第 {loop_index + 1}/{loop_count} 轮开始")
             for step_index, step in enumerate(steps):
                 step_type = str(step.get("type", "")).strip()
@@ -325,8 +331,18 @@ class LoopSequenceNode(BaseNode):
                     if step_type == "Tap":
                         x = int(step.get("x"))
                         y = int(step.get("y"))
-                        ctx.adb.tap(device_id, x, y)
-                        ctx.log(f"{log_prefix}：点击({x},{y})")
+                        tap_repeat = max(1, int(step.get("repeat", step.get("repeat_count", 1))))
+                        tap_interval_sec = max(0.0, float(step.get("interval_sec", 0.12)))
+                        for tap_idx in range(tap_repeat):
+                            ctx.adb.tap(device_id, x, y)
+                            if tap_repeat > 1:
+                                ctx.log(
+                                    f"{log_prefix}：点击({x},{y}) 第 {tap_idx + 1}/{tap_repeat} 次"
+                                )
+                            else:
+                                ctx.log(f"{log_prefix}：点击({x},{y})")
+                            if tap_idx < tap_repeat - 1 and tap_interval_sec > 0:
+                                time.sleep(tap_interval_sec)
                     elif step_type == "Swipe":
                         x1 = step.get("x1")
                         y1 = step.get("y1")

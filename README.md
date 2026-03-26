@@ -90,9 +90,10 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 ### LoopSequence
 - `loop_count`: 循环次数
 - `step_pause_sec`: 每个步骤之间的等待秒数
+- `loop_start_wait_sec`: 每轮开始前等待秒数（第 2 轮起生效，建议 0.5~1.0）
 - `continue_on_error`: 某步骤失败后是否继续后续步骤/轮次
 - `steps`: 多行 JSON 数组，支持步骤类型（区分大小写）：
-  - `Tap`: 点击（需 `x`,`y`）
+  - `Tap`: 点击（需 `x`,`y`，可选 `repeat`/`repeat_count` 和 `interval_sec` 提高命中稳定性）
   - `Swipe`: 滑动（可用 `direction`，或直接给 `x1,y1,x2,y2`）
     - 方向模式下可用 `distance_px` 控制滑动像素（可选 `x`,`y` 作为起点）
     - 手势时长使用 `swipe_duration_ms`（毫秒）

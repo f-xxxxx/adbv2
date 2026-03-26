@@ -14,6 +14,7 @@
       ],
       "loop_count": 5,
       "step_pause_sec": 0.4,
+      "loop_start_wait_sec": 0.8,
       "continue_on_error": false,
       "remote_dir": "/sdcard/adbflow",
       "prefix": "detail_loop",
@@ -24,12 +25,12 @@
       "swipe_pause_sec": 0.8,
       "capture_pause_sec": 0.2,
       "steps": [
-        {"name":"进入详情","type":"Tap","x":600,"y":1520},
+        {"name":"进入详情","type":"Tap","x":600,"y":1520,"repeat":2,"interval_sec":0.12},
         {"name":"等待详情页加载","type":"Wait","duration_sec":1.0},
         {"name":"详情截图","type":"Screenshot","prefix":"detail"},
         {"name":"左上返回","type":"Tap","x":120,"y":228},
         {"name":"等待列表稳定","type":"Wait","duration_sec":0.6},
-        {"name":"上滑到下一条","type":"Swipe","direction":"up","distance_px":50,"swipe_duration_ms":180}
+        {"name":"上滑到下一条","type":"Swipe","direction":"up","distance_px":80,"swipe_duration_ms":180}
       ]
     }
   },
