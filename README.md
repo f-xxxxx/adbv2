@@ -47,6 +47,27 @@ python webapp.py
 - 右上角“加载工作流”可从 `workflows` 目录选择任意 JSON 工作流
 - 右上角“加载工作流”也支持选择本地 JSON 文件导入
 
+### 一键启动脚本
+
+- macOS（zsh）：
+
+```bash
+chmod +x start.command
+./start.command
+```
+
+- Windows（PowerShell）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_windows.ps1
+```
+
+- Windows（双击启动）：
+
+```bat
+start_windows.bat
+```
+
 ## 3. CLI 执行（可选）
 
 也可以直接运行 JSON 工作流：
