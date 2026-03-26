@@ -561,6 +561,21 @@
       gap: 8px;
       justify-content: flex-end;
     }
+    .tap-picker-layout {
+      grid-template-columns: minmax(420px, 1fr) 260px;
+      min-height: 420px;
+      height: 62vh;
+    }
+    .tap-picker-right {
+      grid-template-rows: auto auto 1fr auto;
+    }
+    .tap-picker-canvas {
+      cursor: crosshair;
+    }
+    .tap-picker-right .helper-empty {
+      padding: 8px;
+      line-height: 1.6;
+    }
     .image-lightbox-panel {
       width: min(94vw, 1400px);
       max-height: 94vh;
@@ -608,4 +623,3 @@
         display: none;
       }
     }
-

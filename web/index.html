@@ -177,6 +177,36 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="tap-picker-modal">
+    <div class="modal-panel" style="width:min(1080px,96vw)">
+      <div class="modal-head">点击节点取点工具</div>
+      <div class="modal-body">
+        <div class="helper-layout tap-picker-layout">
+          <div class="helper-left">
+            <div class="helper-toolbar">
+              <span id="tap-picker-image-info">请先上传本地图片</span>
+              <span>点击图片位置获取 x,y 坐标</span>
+            </div>
+            <div class="helper-canvas-wrap">
+              <canvas id="tap-picker-canvas" class="helper-canvas tap-picker-canvas"></canvas>
+            </div>
+          </div>
+          <div class="helper-right tap-picker-right">
+            <div class="helper-section">
+              <input id="tap-picker-file" class="helper-file" type="file" accept="image/*" />
+            </div>
+            <div class="helper-section">当前坐标：<span id="tap-picker-point-value">未选择</span></div>
+            <div class="helper-empty">上传截图后，在左侧单击目标位置，确认后写回点击节点。</div>
+            <div class="helper-actions">
+              <button onclick="closeTapPicker()">取消</button>
+              <button class="primary" onclick="applyTapPickerPoint()">写入坐标</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="image-lightbox-modal">
     <div class="image-lightbox-panel">
       <div class="image-lightbox-head">

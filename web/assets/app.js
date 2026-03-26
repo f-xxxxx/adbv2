@@ -16,6 +16,7 @@ const graph = new LGraph();
     let activeBottomTab = "logs";
     let currentEditingOcrNode = null;
     let regionHelperReady = false;
+    let tapPickerReady = false;
     let workflowRunning = false;
     const regionHelper = {
       image: null,
@@ -32,6 +33,16 @@ const graph = new LGraph();
     };
     const imageLightboxState = {
       nodeId: null
+    };
+    const tapPicker = {
+      node: null,
+      image: null,
+      imageName: "",
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      selectedX: null,
+      selectedY: null
     };
 
     const CLASS_MAP = {
@@ -82,7 +93,8 @@ const graph = new LGraph();
       makeIO(this, true);
       this.addWidget("number", "横坐标", this.properties.x, (v) => this.properties.x = Number(v));
       this.addWidget("number", "纵坐标", this.properties.y, (v) => this.properties.y = Number(v));
-      this.size = [220, 100];
+      this.addWidget("button", "图片取点", "", () => openTapPicker(this));
+      this.size = [240, 130];
     }
 
     function SwipeNode() {
@@ -1375,6 +1387,210 @@ const graph = new LGraph();
       el.textContent = `${regionHelper.imageName || "已上传图片"} (${regionHelper.image.width} x ${regionHelper.image.height})`;
     }
 
+    function ensureTapPickerReady() {
+      if (tapPickerReady) return;
+      tapPickerReady = true;
+      const fileInput = document.getElementById("tap-picker-file");
+      const canvasEl = document.getElementById("tap-picker-canvas");
+      if (fileInput) fileInput.addEventListener("change", onTapPickerFileChange);
+      if (canvasEl) canvasEl.addEventListener("click", onTapPickerCanvasClick);
+      window.addEventListener("resize", () => {
+        const modal = document.getElementById("tap-picker-modal");
+        if (!modal || modal.classList.contains("hidden")) return;
+        resizeTapPickerCanvas();
+        drawTapPickerCanvas();
+      });
+    }
+
+    function openTapPicker(node) {
+      ensureTapPickerReady();
+      tapPicker.node = node || null;
+      tapPicker.image = null;
+      tapPicker.imageName = "";
+      tapPicker.scale = 1;
+      tapPicker.offsetX = 0;
+      tapPicker.offsetY = 0;
+      tapPicker.selectedX = Number.isFinite(Number(node && node.properties ? node.properties.x : NaN))
+        ? Math.round(Number(node.properties.x))
+        : null;
+      tapPicker.selectedY = Number.isFinite(Number(node && node.properties ? node.properties.y : NaN))
+        ? Math.round(Number(node.properties.y))
+        : null;
+
+      const fileInput = document.getElementById("tap-picker-file");
+      if (fileInput) fileInput.value = "";
+
+      updateTapPickerImageInfo();
+      updateTapPickerPointInfo();
+      const modal = document.getElementById("tap-picker-modal");
+      if (modal) modal.classList.remove("hidden");
+      resizeTapPickerCanvas();
+      drawTapPickerCanvas();
+      setStatus("请上传图片并点击目标位置获取 x,y 坐标");
+    }
+
+    function closeTapPicker() {
+      const modal = document.getElementById("tap-picker-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    function onTapPickerFileChange(event) {
+      const file = event.target && event.target.files ? event.target.files[0] : null;
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          tapPicker.image = img;
+          tapPicker.imageName = file.name || "";
+          resizeTapPickerCanvas();
+          drawTapPickerCanvas();
+          updateTapPickerImageInfo();
+          setStatus("图片已加载，点击图片选择坐标");
+        };
+        img.src = String(reader.result || "");
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function resizeTapPickerCanvas() {
+      const canvasEl = document.getElementById("tap-picker-canvas");
+      if (!canvasEl) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const nextW = Math.max(360, Math.floor(rect.width));
+      const nextH = Math.max(300, Math.floor(rect.height));
+      if (canvasEl.width !== nextW) canvasEl.width = nextW;
+      if (canvasEl.height !== nextH) canvasEl.height = nextH;
+      computeTapPickerImageLayout();
+    }
+
+    function computeTapPickerImageLayout() {
+      const canvasEl = document.getElementById("tap-picker-canvas");
+      if (!canvasEl || !tapPicker.image) return;
+      const pad = 12;
+      const drawW = Math.max(1, canvasEl.width - pad * 2);
+      const drawH = Math.max(1, canvasEl.height - pad * 2);
+      const scale = Math.min(drawW / tapPicker.image.width, drawH / tapPicker.image.height);
+      tapPicker.scale = Math.max(scale, 0.01);
+      tapPicker.offsetX = (canvasEl.width - tapPicker.image.width * tapPicker.scale) * 0.5;
+      tapPicker.offsetY = (canvasEl.height - tapPicker.image.height * tapPicker.scale) * 0.5;
+    }
+
+    function drawTapPickerCanvas() {
+      const canvasEl = document.getElementById("tap-picker-canvas");
+      if (!canvasEl) return;
+      const ctx = canvasEl.getContext("2d");
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      ctx.fillStyle = "#111318";
+      ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+
+      if (!tapPicker.image) {
+        ctx.fillStyle = "#7f8796";
+        ctx.font = "13px Segoe UI";
+        ctx.fillText("请先上传图片", 16, 26);
+        return;
+      }
+
+      computeTapPickerImageLayout();
+      const drawW = tapPicker.image.width * tapPicker.scale;
+      const drawH = tapPicker.image.height * tapPicker.scale;
+      ctx.drawImage(tapPicker.image, tapPicker.offsetX, tapPicker.offsetY, drawW, drawH);
+
+      if (Number.isFinite(tapPicker.selectedX) && Number.isFinite(tapPicker.selectedY)) {
+        const px = tapPicker.offsetX + tapPicker.selectedX * tapPicker.scale;
+        const py = tapPicker.offsetY + tapPicker.selectedY * tapPicker.scale;
+        ctx.save();
+        ctx.strokeStyle = "#44b2ff";
+        ctx.fillStyle = "#44b2ff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(px - 12, py);
+        ctx.lineTo(px + 12, py);
+        ctx.moveTo(px, py - 12);
+        ctx.lineTo(px, py + 12);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#8dd0ff";
+        ctx.font = "12px Segoe UI";
+        ctx.fillText(`(${tapPicker.selectedX}, ${tapPicker.selectedY})`, px + 8, py - 8);
+        ctx.restore();
+      }
+    }
+
+    function tapPickerCanvasToImagePoint(event) {
+      const canvasEl = document.getElementById("tap-picker-canvas");
+      if (!canvasEl || !tapPicker.image) return null;
+      const rect = canvasEl.getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const x = (cx - tapPicker.offsetX) / tapPicker.scale;
+      const y = (cy - tapPicker.offsetY) / tapPicker.scale;
+      if (x < 0 || y < 0 || x > tapPicker.image.width || y > tapPicker.image.height) {
+        return null;
+      }
+      return {
+        x: Math.max(0, Math.min(tapPicker.image.width, x)),
+        y: Math.max(0, Math.min(tapPicker.image.height, y))
+      };
+    }
+
+    function onTapPickerCanvasClick(event) {
+      if (!tapPicker.image) return;
+      const p = tapPickerCanvasToImagePoint(event);
+      if (!p) {
+        setStatus("请点击图片内容区域");
+        return;
+      }
+      tapPicker.selectedX = Math.round(p.x);
+      tapPicker.selectedY = Math.round(p.y);
+      updateTapPickerPointInfo();
+      drawTapPickerCanvas();
+      setStatus(`已选取坐标 (${tapPicker.selectedX}, ${tapPicker.selectedY})`);
+    }
+
+    function updateTapPickerImageInfo() {
+      const el = document.getElementById("tap-picker-image-info");
+      if (!el) return;
+      if (!tapPicker.image) {
+        el.textContent = "请先上传本地图片";
+        return;
+      }
+      el.textContent = `${tapPicker.imageName || "已上传图片"} (${tapPicker.image.width} x ${tapPicker.image.height})`;
+    }
+
+    function updateTapPickerPointInfo() {
+      const el = document.getElementById("tap-picker-point-value");
+      if (!el) return;
+      if (!Number.isFinite(tapPicker.selectedX) || !Number.isFinite(tapPicker.selectedY)) {
+        el.textContent = "未选择";
+        return;
+      }
+      el.textContent = `${tapPicker.selectedX}, ${tapPicker.selectedY}`;
+    }
+
+    function applyTapPickerPoint() {
+      if (!tapPicker.node) {
+        closeTapPicker();
+        return;
+      }
+      if (!Number.isFinite(tapPicker.selectedX) || !Number.isFinite(tapPicker.selectedY)) {
+        setStatus("请先在图片上点击选点");
+        return;
+      }
+      tapPicker.node.properties.x = Math.round(tapPicker.selectedX);
+      tapPicker.node.properties.y = Math.round(tapPicker.selectedY);
+      const widgets = tapPicker.node.widgets || [];
+      if (widgets[0]) widgets[0].value = tapPicker.node.properties.x;
+      if (widgets[1]) widgets[1].value = tapPicker.node.properties.y;
+      markCanvasDirty();
+      setStatus(`已写入点击坐标 (${tapPicker.node.properties.x}, ${tapPicker.node.properties.y})`);
+      closeTapPicker();
+    }
+
     function isTypingInTextField(target) {
       if (!target) return false;
       const tag = String(target.tagName || "").toUpperCase();
@@ -1675,6 +1891,11 @@ const graph = new LGraph();
           closeRegionHelper();
           return;
         }
+        const tapPickerModal = document.getElementById("tap-picker-modal");
+        if (tapPickerModal && !tapPickerModal.classList.contains("hidden")) {
+          closeTapPicker();
+          return;
+        }
         const modal = document.getElementById("regions-modal");
         if (!modal.classList.contains("hidden")) {
           closeRegionsEditor();
@@ -1708,6 +1929,14 @@ const graph = new LGraph();
       imageLightboxModal.addEventListener("click", (event) => {
         if (event.target === imageLightboxModal) {
           closeImageLightbox();
+        }
+      });
+    }
+    const tapPickerModal = document.getElementById("tap-picker-modal");
+    if (tapPickerModal) {
+      tapPickerModal.addEventListener("click", (event) => {
+        if (event.target === tapPickerModal) {
+          closeTapPicker();
         }
       });
     }
