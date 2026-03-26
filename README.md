@@ -72,15 +72,34 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 ### Swipe
 - `direction`: `up` 或 `down`
 - `duration_ms`: 滑动时长（毫秒）
+- `distance_px`: 按方向模式滑动的像素距离（支持设置起点 `x`,`y`）
 - 也可直接设置 `x1,y1,x2,y2` 覆盖方向策略
+
+### Wait
+- `duration_sec`: 等待秒数（支持小数）
 
 ### Screenshot
 - `remote_dir`: 手机侧保存目录（例如 `/sdcard/adbflow`）
 - `prefix`: 文件名前缀
 - `scroll`: 是否滚动截图
 - `scroll_count`: 滚动截图帧数
+- `scroll_distance_px`: 每次滚动滑动像素（仅 `scroll=true` 时生效）
 - `scroll_direction`: `up` 或 `down`
 - `swipe_duration_ms`, `swipe_pause_sec`, `capture_pause_sec`: 节奏参数
+
+### LoopSequence
+- `loop_count`: 循环次数
+- `step_pause_sec`: 每个步骤之间的等待秒数
+- `continue_on_error`: 某步骤失败后是否继续后续步骤/轮次
+- `steps`: 多行 JSON 数组，支持步骤类型（区分大小写）：
+  - `Tap`: 点击（需 `x`,`y`）
+  - `Swipe`: 滑动（可用 `direction`，或直接给 `x1,y1,x2,y2`）
+    - 方向模式下可用 `distance_px` 控制滑动像素（可选 `x`,`y` 作为起点）
+    - 手势时长使用 `swipe_duration_ms`（毫秒）
+  - `Screenshot`: 截图（可覆盖 `remote_dir`,`prefix`,`scroll` 等参数）
+  - `Wait`: 等待（`duration_sec`/`seconds`/`sec`）
+- 返回动作请使用 `Tap`（配置左上角返回坐标）
+- 节点级截图默认参数：`remote_dir`,`prefix`,`scroll`,`scroll_count`,`scroll_direction`,`swipe_duration_ms`,`swipe_pause_sec`,`capture_pause_sec`
 
 ### PullToPC
 - `save_dir`: 电脑本地保存目录
@@ -129,6 +148,7 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 - `workflows/example_workflow.json`
 - `workflows/example_folder_ocr_workflow.json`（从图片文件夹直接 OCR 的示例）
 - `workflows/example_screenshot_only_workflow.json`（仅截图并回传到电脑）
+- `workflows/example_loop_sequence_workflow.json`（循环执行“点击->截图->返回->上滑”）
 
 ## 6. 注意事项
 

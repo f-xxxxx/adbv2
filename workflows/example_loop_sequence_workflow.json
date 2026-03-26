@@ -1,0 +1,105 @@
+{
+  "1": {
+    "class_type": "StartDevice",
+    "inputs": {
+      "device_id": ""
+    }
+  },
+  "2": {
+    "class_type": "LoopSequence",
+    "inputs": {
+      "input": [
+        "1",
+        0
+      ],
+      "loop_count": 5,
+      "step_pause_sec": 0.4,
+      "continue_on_error": false,
+      "remote_dir": "/sdcard/adbflow",
+      "prefix": "detail_loop",
+      "scroll": false,
+      "scroll_count": 1,
+      "scroll_direction": "up",
+      "swipe_duration_ms": 350,
+      "swipe_pause_sec": 0.8,
+      "capture_pause_sec": 0.2,
+      "steps": [
+        {"name":"进入详情","type":"Tap","x":600,"y":1520},
+        {"name":"等待详情页加载","type":"Wait","duration_sec":1.0},
+        {"name":"详情截图","type":"Screenshot","prefix":"detail"},
+        {"name":"左上返回","type":"Tap","x":120,"y":228},
+        {"name":"等待列表稳定","type":"Wait","duration_sec":0.6},
+        {"name":"上滑到下一条","type":"Swipe","direction":"up","distance_px":50,"swipe_duration_ms":180}
+      ]
+    }
+  },
+  "3": {
+    "class_type": "PullToPC",
+    "inputs": {
+      "input": [
+        "2",
+        0
+      ],
+      "save_dir": "outputs/screenshots",
+      "stitch_scroll": false,
+      "max_overlap_px": 300,
+      "cleanup_remote": true
+    }
+  },
+  "4": {
+    "class_type": "EasyOCR",
+    "inputs": {
+      "input": [
+        "3",
+        0
+      ],
+      "languages": "ch_sim,en",
+      "gpu": false,
+      "use_all_images": true,
+      "image_dir": "",
+      "regions": [
+        {
+          "name": "姓名",
+          "x": 220,
+          "y": 840,
+          "w": 700,
+          "h": 180
+        },
+        {
+          "name": "手机号",
+          "x": 40,
+          "y": 1030,
+          "w": 620,
+          "h": 120
+        },
+        {
+          "name": "归属地",
+          "x": 30,
+          "y": 1140,
+          "w": 620,
+          "h": 100
+        }
+      ]
+    }
+  },
+  "5": {
+    "class_type": "ExportExcel",
+    "inputs": {
+      "input": [
+        "4",
+        0
+      ],
+      "output_path": "outputs/ocr_loop_result.xlsx"
+    }
+  },
+  "6": {
+    "class_type": "PreviewExcel",
+    "inputs": {
+      "input": [
+        "5",
+        0
+      ],
+      "max_rows": 10
+    }
+  }
+}

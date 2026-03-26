@@ -87,6 +87,6 @@ class ADBClient:
         safe_paths = [p for p in paths if p and p.startswith("/")]
         if not safe_paths:
             return
-        # Keep deletion in one shell invocation while escaping with simple quoting.
-        quoted = " ".join(f'"{p}"' for p in safe_paths)
-        self.shell(device_id, "sh", "-c", f"rm -f {quoted}")
+        # Use direct `rm` per file to avoid `sh -c` quoting differences across devices.
+        for remote_path in safe_paths:
+            self.shell(device_id, "rm", "-f", remote_path)
