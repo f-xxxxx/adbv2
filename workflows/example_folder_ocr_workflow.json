@@ -1,0 +1,65 @@
+{
+  "1": {
+    "class_type": "EasyOCR",
+    "inputs": {
+      "image_dir": "outputs/screenshots",
+      "languages": "ch_sim,en",
+      "gpu": false,
+      "use_all_images": true,
+      "regions": [
+        {
+          "name": "姓名",
+          "x": 220,
+          "y": 840,
+          "w": 700,
+          "h": 180
+        },
+        {
+          "name": "手机号",
+          "x": 40,
+          "y": 1030,
+          "w": 620,
+          "h": 120
+        },
+        {
+          "name": "归属地",
+          "x": 30,
+          "y": 1140,
+          "w": 620,
+          "h": 100
+        }
+      ]
+    }
+  },
+  "2": {
+    "class_type": "ExportExcel",
+    "inputs": {
+      "input": [
+        "1",
+        0
+      ],
+      "output_path": "outputs/ocr_from_folder.xlsx"
+    }
+  },
+  "3": {
+    "class_type": "PreviewExcel",
+    "inputs": {
+      "input": [
+        "2",
+        0
+      ],
+      "max_rows": 10
+    }
+  },
+  "4": {
+    "class_type": "PreviewImages",
+    "inputs": {
+      "input": [
+        "1",
+        0
+      ],
+      "folder_dir": "",
+      "max_images": 12
+    }
+  }
+}

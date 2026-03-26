@@ -1,0 +1,105 @@
+{
+  "1": {
+    "class_type": "StartDevice",
+    "inputs": {
+      "device_id": ""
+    }
+  },
+  "2": {
+    "class_type": "Tap",
+    "inputs": {
+      "input": [
+        "1",
+        0
+      ],
+      "x": 600,
+      "y": 1520
+    }
+  },
+  "3": {
+    "class_type": "Screenshot",
+    "inputs": {
+      "input": [
+        "2",
+        0
+      ],
+      "remote_dir": "/sdcard/adbflow",
+      "prefix": "capture",
+      "scroll": false,
+      "scroll_count": 0,
+      "scroll_direction": "up",
+      "swipe_duration_ms": 300,
+      "swipe_pause_sec": 0.8,
+      "capture_pause_sec": 0.2
+    }
+  },
+  "4": {
+    "class_type": "PullToPC",
+    "inputs": {
+      "input": [
+        "3",
+        0
+      ],
+      "save_dir": "outputs/screenshots",
+      "stitch_scroll": true,
+      "max_overlap_px": 320,
+      "cleanup_remote": true
+    }
+  },
+  "5": {
+    "class_type": "EasyOCR",
+    "inputs": {
+      "input": [
+        "4",
+        0
+      ],
+      "languages": "ch_sim,en",
+      "gpu": true,
+      "use_all_images": true,
+      "regions": [
+        {
+          "name": "姓名",
+          "x": 223,
+          "y": 843,
+          "w": 689,
+          "h": 163
+        },
+        {
+          "name": "手机号",
+          "x": 43,
+          "y": 1045,
+          "w": 560,
+          "h": 78
+        },
+        {
+          "name": "归属地",
+          "x": 32,
+          "y": 1129,
+          "w": 577,
+          "h": 67
+        }
+      ]
+    }
+  },
+  "6": {
+    "class_type": "ExportExcel",
+    "inputs": {
+      "input": [
+        "5",
+        0
+      ],
+      "output_path": "outputs/ocr_result.xlsx"
+    }
+  },
+  "7": {
+    "class_type": "PreviewExcel",
+    "inputs": {
+      "input": [
+        "6",
+        0
+      ],
+      "max_rows": 10
+    }
+  }
+}
+
