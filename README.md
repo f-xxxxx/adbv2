@@ -87,20 +87,15 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 - `scroll_direction`: `up` 或 `down`
 - `swipe_duration_ms`, `swipe_pause_sec`, `capture_pause_sec`: 节奏参数
 
-### LoopSequence
+### LoopStart
 - `loop_count`: 循环次数
-- `step_pause_sec`: 每个步骤之间的等待秒数
 - `loop_start_wait_sec`: 每轮开始前等待秒数（第 2 轮起生效，建议 0.5~1.0）
-- `continue_on_error`: 某步骤失败后是否继续后续步骤/轮次
-- `steps`: 多行 JSON 数组，支持步骤类型（区分大小写）：
-  - `Tap`: 点击（需 `x`,`y`，可选 `repeat`/`repeat_count` 和 `interval_sec` 提高命中稳定性）
-  - `Swipe`: 滑动（可用 `direction`，或直接给 `x1,y1,x2,y2`）
-    - 方向模式下可用 `distance_px` 控制滑动像素（可选 `x`,`y` 作为起点）
-    - 手势时长使用 `swipe_duration_ms`（毫秒）
-  - `Screenshot`: 截图（可覆盖 `remote_dir`,`prefix`,`scroll` 等参数）
-  - `Wait`: 等待（`duration_sec`/`seconds`/`sec`）
-- 返回动作请使用 `Tap`（配置左上角返回坐标）
-- 节点级截图默认参数：`remote_dir`,`prefix`,`scroll`,`scroll_count`,`scroll_direction`,`swipe_duration_ms`,`swipe_pause_sec`,`capture_pause_sec`
+- 作为容器起点，放在要循环的节点前面
+
+### LoopEnd
+- 作为容器终点，放在要循环的节点后面
+- 引擎会自动找到最近上游 `LoopStart`，并循环执行两者之间的节点
+- 每轮输出会作为下一轮输入继续传递，可用于累计截图结果
 
 ### PullToPC
 - `save_dir`: 电脑本地保存目录
@@ -149,7 +144,7 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 - `workflows/example_workflow.json`
 - `workflows/example_folder_ocr_workflow.json`（从图片文件夹直接 OCR 的示例）
 - `workflows/example_screenshot_only_workflow.json`（仅截图并回传到电脑）
-- `workflows/example_loop_sequence_workflow.json`（循环执行“点击->截图->返回->上滑”）
+- `workflows/example_loop_sequence_workflow.json`（使用循环开始/循环结束容器循环执行“点击->截图->返回->上滑”）
 
 ## 6. 注意事项
 

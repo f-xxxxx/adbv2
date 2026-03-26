@@ -201,7 +201,7 @@ class ScreenshotNode(BaseNode):
         ts = int(time.time())
         ctx.adb.mkdir(device_id, remote_dir)
 
-        remote_paths: list[str] = []
+        remote_paths: list[str] = list(payload.get("remote_paths") or [])
         for i in range(capture_count):
             name = f"{prefix}_{ts}_{i + 1}.png"
             remote_path = f"{remote_dir.rstrip('/')}/{name}"
@@ -235,6 +235,26 @@ class ScreenshotNode(BaseNode):
             "remote_dir": remote_dir,
             "scroll_distance_px": scroll_distance_px,
         }
+
+
+class LoopStartNode(BaseNode):
+    class_type = "LoopStart"
+
+    def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        payload = self._input_payload(inputs)
+        loop_count = max(1, self._as_int(inputs.get("loop_count"), 1))
+        loop_start_wait_sec = max(0.0, self._as_float(inputs.get("loop_start_wait_sec"), 0.0))
+        ctx.log(f"[循环开始节点] 循环次数={loop_count}，轮次间等待={loop_start_wait_sec:.2f}秒")
+        return {**payload}
+
+
+class LoopEndNode(BaseNode):
+    class_type = "LoopEnd"
+
+    def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        payload = self._input_payload(inputs)
+        ctx.log("[循环结束节点] 循环区间执行完成")
+        return {**payload}
 
 
 class PullToPcNode(BaseNode):
@@ -278,183 +298,6 @@ class PullToPcNode(BaseNode):
             "local_paths": local_paths,
             "stitched_path": stitched_path,
             "save_dir": str(save_dir),
-        }
-
-
-class LoopSequenceNode(BaseNode):
-    class_type = "LoopSequence"
-
-    def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
-        payload = self._input_payload(inputs)
-        device_id = self._device_id(payload)
-        loop_count = max(1, self._as_int(inputs.get("loop_count"), 1))
-        step_pause_sec = max(0.0, self._as_float(inputs.get("step_pause_sec"), 0.3))
-        loop_start_wait_sec = max(0.0, self._as_float(inputs.get("loop_start_wait_sec"), 0.0))
-        continue_on_error = self._as_bool(inputs.get("continue_on_error"), False)
-        steps = _parse_loop_steps(inputs.get("steps"))
-        if not steps:
-            raise NodeExecutionError("循环序列步骤为空，请至少配置一个步骤。")
-
-        default_remote_dir = str(inputs.get("remote_dir", "/sdcard/adbflow")).strip() or "/sdcard/adbflow"
-        default_prefix = str(inputs.get("prefix", "loop_capture")).strip() or "loop_capture"
-        default_scroll = self._as_bool(inputs.get("scroll"), False)
-        default_scroll_count = max(1, self._as_int(inputs.get("scroll_count"), 1))
-        default_scroll_direction = str(inputs.get("scroll_direction", "up")).strip().lower() or "up"
-        default_swipe_duration_ms = self._as_int(inputs.get("swipe_duration_ms"), 350)
-        default_swipe_pause_sec = max(0.0, self._as_float(inputs.get("swipe_pause_sec"), 0.8))
-        default_capture_pause_sec = max(0.0, self._as_float(inputs.get("capture_pause_sec"), 0.2))
-
-        remote_paths: list[str] = list(payload.get("remote_paths") or [])
-        before_count = len(remote_paths)
-        last_remote_dir = default_remote_dir
-        scroll_used = False
-        ts = int(time.time())
-
-        ctx.log(
-            f"[循环序列节点] 开始执行：轮次={loop_count}，步骤数={len(steps)}，异常处理={'继续' if continue_on_error else '中断'}"
-        )
-        for loop_index in range(loop_count):
-            if loop_index > 0 and loop_start_wait_sec > 0:
-                time.sleep(loop_start_wait_sec)
-                ctx.log(
-                    f"[循环序列节点] 第 {loop_index + 1}/{loop_count} 轮开始前等待 {loop_start_wait_sec:.2f} 秒"
-                )
-            ctx.log(f"[循环序列节点] 第 {loop_index + 1}/{loop_count} 轮开始")
-            for step_index, step in enumerate(steps):
-                step_type = str(step.get("type", "")).strip()
-                step_name = str(step.get("name", "")).strip() or step_type or f"步骤{step_index + 1}"
-                log_prefix = (
-                    f"[循环序列节点] 第 {loop_index + 1}/{loop_count} 轮 步骤 {step_index + 1}/{len(steps)} "
-                    f"{step_name}"
-                )
-                try:
-                    if step_type == "Tap":
-                        x = int(step.get("x"))
-                        y = int(step.get("y"))
-                        tap_repeat = max(1, int(step.get("repeat", step.get("repeat_count", 1))))
-                        tap_interval_sec = max(0.0, float(step.get("interval_sec", 0.12)))
-                        for tap_idx in range(tap_repeat):
-                            ctx.adb.tap(device_id, x, y)
-                            if tap_repeat > 1:
-                                ctx.log(
-                                    f"{log_prefix}：点击({x},{y}) 第 {tap_idx + 1}/{tap_repeat} 次"
-                                )
-                            else:
-                                ctx.log(f"{log_prefix}：点击({x},{y})")
-                            if tap_idx < tap_repeat - 1 and tap_interval_sec > 0:
-                                time.sleep(tap_interval_sec)
-                    elif step_type == "Swipe":
-                        x1 = step.get("x1")
-                        y1 = step.get("y1")
-                        x2 = step.get("x2")
-                        y2 = step.get("y2")
-                        if None not in (x1, y1, x2, y2):
-                            duration_ms = int(step.get("duration_ms", default_swipe_duration_ms))
-                            sx1, sy1, sx2, sy2 = int(x1), int(y1), int(x2), int(y2)
-                            ctx.adb.swipe(device_id, sx1, sy1, sx2, sy2, duration_ms=duration_ms)
-                            ctx.log(f"{log_prefix}：滑动({sx1},{sy1})->({sx2},{sy2})，时长={duration_ms}ms")
-                        else:
-                            direction = str(step.get("direction", "up")).strip().lower() or "up"
-                            distance_px = max(
-                                1,
-                                int(
-                                    step.get(
-                                        "distance_px",
-                                        step.get("move_px", 120),
-                                    )
-                                ),
-                            )
-                            duration_ms = int(step.get("swipe_duration_ms", default_swipe_duration_ms))
-                            sx1, sy1, sx2, sy2 = _direction_swipe_coords_by_distance(
-                                adb=ctx.adb,
-                                device_id=device_id,
-                                direction=direction,
-                                distance_px=distance_px,
-                                x=step.get("x"),
-                                y=step.get("y"),
-                            )
-                            ctx.adb.swipe(device_id, sx1, sy1, sx2, sy2, duration_ms=duration_ms)
-                            ctx.log(
-                                f"{log_prefix}：方向滑动 {direction}，位移={distance_px}px，"
-                                f"({sx1},{sy1})->({sx2},{sy2})，时长={duration_ms}ms"
-                            )
-                    elif step_type == "Wait":
-                        duration_sec = max(
-                            0.0,
-                            float(
-                                step.get(
-                                    "duration_sec",
-                                    step.get("seconds", step.get("sec", 0.5)),
-                                )
-                            ),
-                        )
-                        if duration_sec > 0:
-                            time.sleep(duration_sec)
-                        ctx.log(f"{log_prefix}：等待 {duration_sec:.2f} 秒")
-                    elif step_type == "Screenshot":
-                        remote_dir = str(step.get("remote_dir", default_remote_dir)).strip() or default_remote_dir
-                        prefix = str(step.get("prefix", default_prefix)).strip() or default_prefix
-                        scroll = self._as_bool(step.get("scroll"), default_scroll)
-                        scroll_count = max(1, self._as_int(step.get("scroll_count"), default_scroll_count))
-                        scroll_direction = (
-                            str(step.get("scroll_direction", default_scroll_direction)).strip().lower()
-                            or default_scroll_direction
-                        )
-                        swipe_duration_ms = self._as_int(step.get("swipe_duration_ms"), default_swipe_duration_ms)
-                        swipe_pause_sec = max(0.0, self._as_float(step.get("swipe_pause_sec"), default_swipe_pause_sec))
-                        capture_pause_sec = max(
-                            0.0,
-                            self._as_float(step.get("capture_pause_sec"), default_capture_pause_sec),
-                        )
-
-                        capture_count = scroll_count if scroll else 1
-                        ctx.adb.mkdir(device_id, remote_dir)
-                        captured: list[str] = []
-                        for cap_idx in range(capture_count):
-                            name = (
-                                f"{prefix}_{ts}_r{loop_index + 1}_s{step_index + 1}_{cap_idx + 1}.png"
-                            )
-                            remote_path = f"{remote_dir.rstrip('/')}/{name}"
-                            ctx.adb.screenshot_to_remote(device_id, remote_path)
-                            captured.append(remote_path)
-                            time.sleep(capture_pause_sec)
-
-                            if scroll and cap_idx < capture_count - 1:
-                                sx1, sy1, sx2, sy2 = _direction_swipe_coords(ctx.adb, device_id, scroll_direction)
-                                ctx.adb.swipe(device_id, sx1, sy1, sx2, sy2, duration_ms=swipe_duration_ms)
-                                time.sleep(swipe_pause_sec)
-
-                        remote_paths.extend(captured)
-                        last_remote_dir = remote_dir
-                        scroll_used = scroll_used or scroll
-                        ctx.log(
-                            f"{log_prefix}：截图 {len(captured)} 张，滚动={'是' if scroll else '否'}，目录={remote_dir}"
-                        )
-                    else:
-                        raise NodeExecutionError(
-                            f"不支持的步骤类型 `{step_type}`，支持 Tap/Swipe/Screenshot/Wait"
-                        )
-                except Exception as exc:
-                    if continue_on_error:
-                        ctx.log(f"{log_prefix}：失败，已跳过。原因：{exc}")
-                        continue
-                    raise NodeExecutionError(f"{log_prefix} 执行失败：{exc}") from exc
-                finally:
-                    if step_pause_sec > 0:
-                        time.sleep(step_pause_sec)
-
-        generated_count = max(0, len(remote_paths) - before_count)
-        ctx.log(
-            f"[循环序列节点] 执行完成，本轮新增截图 {generated_count} 张，累计 {len(remote_paths)} 张"
-        )
-        return {
-            **payload,
-            "device_id": device_id,
-            "remote_paths": remote_paths,
-            "remote_dir": last_remote_dir,
-            "scroll": scroll_used,
-            "loop_count": loop_count,
-            "loop_step_count": len(steps),
         }
 
 
@@ -808,48 +651,6 @@ def _parse_regions(value: Any) -> list[dict[str, Any]]:
     return [dict(v) for v in parsed]
 
 
-def _parse_loop_steps(value: Any) -> list[dict[str, Any]]:
-    if value is None:
-        return []
-
-    parsed: Any
-    if isinstance(value, list):
-        parsed = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise NodeExecutionError(f"循环步骤配置格式错误：{exc}") from exc
-
-    if not isinstance(parsed, list):
-        raise NodeExecutionError("循环步骤配置必须是数组")
-
-    steps: list[dict[str, Any]] = []
-    for idx, item in enumerate(parsed):
-        if not isinstance(item, dict):
-            raise NodeExecutionError(f"循环步骤第 {idx + 1} 项必须是对象")
-        step = dict(item)
-        raw_type = str(step.get("type", "")).strip()
-        if not raw_type:
-            raise NodeExecutionError(f"循环步骤第 {idx + 1} 项缺少 type")
-        step["type"] = _normalize_loop_step_type(raw_type)
-        steps.append(step)
-    return steps
-
-
-def _normalize_loop_step_type(step_type: str) -> str:
-    text = str(step_type).strip()
-    allowed = {"Tap", "Swipe", "Screenshot", "Wait"}
-    if text in allowed:
-        return text
-    raise NodeExecutionError(
-        f"不支持的步骤类型 `{step_type}`，支持 Tap/Swipe/Screenshot/Wait"
-    )
-
-
 def _normalize_region(region: dict[str, Any], img_w: int, img_h: int) -> tuple[int, int, int, int]:
     x = int(region.get("x", 0))
     y = int(region.get("y", 0))
@@ -1001,7 +802,8 @@ NODE_REGISTRY: dict[str, Callable[[], BaseNode]] = {
     SwipeNode.class_type: SwipeNode,
     WaitNode.class_type: WaitNode,
     ScreenshotNode.class_type: ScreenshotNode,
-    LoopSequenceNode.class_type: LoopSequenceNode,
+    LoopStartNode.class_type: LoopStartNode,
+    LoopEndNode.class_type: LoopEndNode,
     PullToPcNode.class_type: PullToPcNode,
     EasyOCRNode.class_type: EasyOCRNode,
     ExportExcelNode.class_type: ExportExcelNode,

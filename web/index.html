@@ -621,17 +621,18 @@
       </div>
       <div class="group">
         <button onclick="addNodeByType('节点/截图')">截图节点</button>
-        <button onclick="addNodeByType('节点/循环序列')">循环序列节点</button>
+        <button onclick="addNodeByType('节点/循环开始')">循环开始节点</button>
       </div>
       <div class="group">
+        <button onclick="addNodeByType('节点/循环结束')">循环结束节点</button>
         <button onclick="addNodeByType('节点/回传')">回传节点</button>
+      </div>
+      <div class="group">
         <button onclick="addNodeByType('节点/识别')">文字识别节点</button>
-      </div>
-      <div class="group">
         <button onclick="addNodeByType('节点/导出')">导出表格节点</button>
-        <button onclick="addNodeByType('节点/展示')">展示结果节点</button>
       </div>
       <div class="group">
+        <button onclick="addNodeByType('节点/展示')">展示结果节点</button>
         <button onclick="addNodeByType('节点/图片预览')">图片预览节点</button>
       </div>
 
@@ -693,24 +694,6 @@
           <button onclick="formatRegionsEditor()">格式化</button>
           <button onclick="closeRegionsEditor()">取消</button>
           <button class="primary" onclick="saveRegionsEditor()">保存</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal hidden" id="loop-steps-modal">
-    <div class="modal-panel">
-      <div class="modal-head">编辑循环步骤配置（多行文本）</div>
-      <div class="modal-body">
-        <textarea id="loop-steps-textarea" class="regions-textarea" spellcheck="false"></textarea>
-      </div>
-      <div class="modal-foot">
-        <span>建议使用 JSON 数组格式，每个对象包含 type（Tap/Swipe/Screenshot/Wait，区分大小写）</span>
-        <div class="modal-actions">
-          <button onclick="fillLoopStepsTemplate()">填充模板</button>
-          <button onclick="formatLoopStepsEditor()">格式化</button>
-          <button onclick="closeLoopStepsEditor()">取消</button>
-          <button class="primary" onclick="saveLoopStepsEditor()">保存</button>
         </div>
       </div>
     </div>
@@ -803,7 +786,6 @@
     let bottomCollapsed = false;
     let activeBottomTab = "logs";
     let currentEditingOcrNode = null;
-    let currentEditingLoopNode = null;
     let regionHelperReady = false;
     const regionHelper = {
       image: null,
@@ -828,7 +810,8 @@
       "节点/滑动": "Swipe",
       "节点/等待": "Wait",
       "节点/截图": "Screenshot",
-      "节点/循环序列": "LoopSequence",
+      "节点/循环开始": "LoopStart",
+      "节点/循环结束": "LoopEnd",
       "节点/回传": "PullToPC",
       "节点/识别": "EasyOCR",
       "节点/导出": "ExportExcel",
@@ -925,44 +908,22 @@
       this.size = [320, 250];
     }
 
-    function LoopSequenceNode() {
-      this.title = "循环序列节点";
+    function LoopStartNode() {
+      this.title = "循环开始节点";
       this.properties = {
         loop_count: 5,
-        step_pause_sec: 0.3,
-        loop_start_wait_sec: 0.6,
-        continue_on_error: false,
-        remote_dir: "/sdcard/adbflow",
-        prefix: "loop_capture",
-        scroll: false,
-        scroll_count: 1,
-        scroll_direction: "up",
-        swipe_duration_ms: 350,
-        swipe_pause_sec: 0.8,
-        capture_pause_sec: 0.2,
-        steps: JSON.stringify(
-          [
-            { type: "Tap", name: "进入详情", x: 600, y: 1520, repeat: 2, interval_sec: 0.12 },
-            { type: "Wait", name: "等待详情页", duration_sec: 0.8 },
-            { type: "Screenshot", name: "截图", prefix: "detail" },
-            { type: "Tap", name: "左上返回", x: 120, y: 228 },
-            { type: "Wait", name: "等待列表页", duration_sec: 0.4 },
-            { type: "Swipe", name: "上滑到下一条", direction: "up", distance_px: 50, swipe_duration_ms: 180 }
-          ],
-          null,
-          2
-        )
+        loop_start_wait_sec: 0.6
       };
       makeIO(this, true);
       this.addWidget("number", "循环次数", this.properties.loop_count, (v) => this.properties.loop_count = Number(v));
-      this.addWidget("number", "步骤间隔(秒)", this.properties.step_pause_sec, (v) => this.properties.step_pause_sec = Number(v));
       this.addWidget("number", "每轮开始等待(秒)", this.properties.loop_start_wait_sec, (v) => this.properties.loop_start_wait_sec = Number(v));
-      this.addWidget("toggle", "步骤失败继续", this.properties.continue_on_error, (v) => this.properties.continue_on_error = !!v);
-      this.addWidget("text", "默认手机目录", this.properties.remote_dir, (v) => this.properties.remote_dir = v);
-      this.addWidget("text", "默认截图前缀", this.properties.prefix, (v) => this.properties.prefix = v);
-      this.addWidget("button", "编辑步骤(多行)", "", () => openLoopStepsEditor(this));
-      this.__stepsPreviewWidget = this.addWidget("text", "步骤摘要", buildLoopStepsPreview(this.properties.steps), () => {});
-      this.size = [380, 270];
+      this.size = [280, 110];
+    }
+
+    function LoopEndNode() {
+      this.title = "循环结束节点";
+      makeIO(this, true);
+      this.size = [220, 70];
     }
 
     function PullNode() {
@@ -1183,7 +1144,8 @@
     LiteGraph.registerNodeType("节点/滑动", SwipeNode);
     LiteGraph.registerNodeType("节点/等待", WaitNode);
     LiteGraph.registerNodeType("节点/截图", ScreenshotNode);
-    LiteGraph.registerNodeType("节点/循环序列", LoopSequenceNode);
+    LiteGraph.registerNodeType("节点/循环开始", LoopStartNode);
+    LiteGraph.registerNodeType("节点/循环结束", LoopEndNode);
     LiteGraph.registerNodeType("节点/回传", PullNode);
     LiteGraph.registerNodeType("节点/识别", OCRNode);
     LiteGraph.registerNodeType("节点/导出", ExcelNode);
@@ -1400,14 +1362,9 @@
         if (widgets[3]) widgets[3].value = Number(node.properties.scroll_count ?? 3);
         if (widgets[4]) widgets[4].value = Number(node.properties.scroll_distance_px ?? 120);
         if (widgets[5]) widgets[5].value = directionValueToLabel(node.properties.scroll_direction || "up");
-      } else if (ct === "LoopSequence") {
+      } else if (ct === "LoopStart") {
         if (widgets[0]) widgets[0].value = Number(node.properties.loop_count ?? 5);
-        if (widgets[1]) widgets[1].value = Number(node.properties.step_pause_sec ?? 0.3);
-        if (widgets[2]) widgets[2].value = Number(node.properties.loop_start_wait_sec ?? 0.6);
-        if (widgets[3]) widgets[3].value = !!node.properties.continue_on_error;
-        if (widgets[4]) widgets[4].value = node.properties.remote_dir || "/sdcard/adbflow";
-        if (widgets[5]) widgets[5].value = node.properties.prefix || "loop_capture";
-        syncLoopStepsPreview(node);
+        if (widgets[1]) widgets[1].value = Number(node.properties.loop_start_wait_sec ?? 0.6);
       } else if (ct === "PullToPC") {
         if (widgets[0]) widgets[0].value = node.properties.save_dir || "outputs/screenshots";
         if (widgets[1]) widgets[1].value = !!node.properties.stitch_scroll;
@@ -1635,146 +1592,6 @@
       tabPreviewBtn.classList.toggle("active", !onLogs);
       clearBtn.classList.toggle("hidden", !onLogs);
       setStatus(onLogs ? "已切换到执行日志" : "已切换到结果预览");
-    }
-
-    function normalizeLoopStepsText(value) {
-      if (typeof value === "string") return value;
-      try {
-        return JSON.stringify(value || [], null, 2);
-      } catch (_err) {
-        return "";
-      }
-    }
-
-    function parseLoopSteps(value) {
-      const text = normalizeLoopStepsText(value).trim();
-      if (!text) return [];
-      try {
-        const parsed = JSON.parse(text);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.filter((x) => x && typeof x === "object");
-      } catch (_err) {
-        return [];
-      }
-    }
-
-    function normalizeLoopStepType(value) {
-      return String(value || "").trim();
-    }
-
-    function isValidLoopStepType(value) {
-      const t = normalizeLoopStepType(value);
-      return t === "Tap" || t === "Swipe" || t === "Screenshot" || t === "Wait";
-    }
-
-    function buildLoopStepsPreview(value) {
-      const steps = parseLoopSteps(value);
-      if (!steps.length) return "未配置";
-      const names = [];
-      for (const step of steps.slice(0, 4)) {
-        const t = normalizeLoopStepType(step.type);
-        if (!t) continue;
-        if (t === "Tap") names.push("点击");
-        else if (t === "Swipe") names.push("滑动");
-        else if (t === "Screenshot") names.push("截图");
-        else if (t === "Wait") names.push("等待");
-        else names.push(t);
-      }
-      if (!names.length) return `共 ${steps.length} 步`;
-      const suffix = steps.length > names.length ? " ..." : "";
-      return `共 ${steps.length} 步：${names.join(" -> ")}${suffix}`;
-    }
-
-    function syncLoopStepsPreview(node) {
-      if (!node || !node.__stepsPreviewWidget) return;
-      node.__stepsPreviewWidget.value = buildLoopStepsPreview(node.properties.steps);
-      markCanvasDirty();
-    }
-
-    function openLoopStepsEditor(node) {
-      currentEditingLoopNode = node;
-      const modal = document.getElementById("loop-steps-modal");
-      const textarea = document.getElementById("loop-steps-textarea");
-      textarea.value = normalizeLoopStepsText(node && node.properties ? node.properties.steps : "");
-      modal.classList.remove("hidden");
-      setTimeout(() => textarea.focus(), 0);
-    }
-
-    function closeLoopStepsEditor() {
-      currentEditingLoopNode = null;
-      const modal = document.getElementById("loop-steps-modal");
-      modal.classList.add("hidden");
-    }
-
-    function formatLoopStepsEditor() {
-      const textarea = document.getElementById("loop-steps-textarea");
-      const text = String(textarea.value || "").trim();
-      if (!text) {
-        textarea.value = "[]";
-        return;
-      }
-      try {
-        const parsed = JSON.parse(text);
-        if (!Array.isArray(parsed)) {
-          setStatus("循环步骤配置必须是 JSON 数组");
-          return;
-        }
-        textarea.value = JSON.stringify(parsed, null, 2);
-        setStatus("循环步骤配置已格式化");
-      } catch (_err) {
-        setStatus("循环步骤配置不是合法 JSON，无法格式化");
-      }
-    }
-
-    function fillLoopStepsTemplate() {
-      const textarea = document.getElementById("loop-steps-textarea");
-      const current = String(textarea.value || "").trim();
-      if (current) return;
-      const template = [
-        { type: "Tap", name: "进入详情", x: 600, y: 1520, repeat: 2, interval_sec: 0.12 },
-        { type: "Wait", name: "等待详情页", duration_sec: 0.8 },
-        { type: "Screenshot", name: "截图", prefix: "detail" },
-        { type: "Tap", name: "左上返回", x: 120, y: 228 },
-        { type: "Wait", name: "等待列表页", duration_sec: 0.4 },
-        { type: "Swipe", name: "上滑到下一条", direction: "up", distance_px: 50, swipe_duration_ms: 180 }
-      ];
-      textarea.value = JSON.stringify(template, null, 2);
-      setStatus("已填充循环步骤模板");
-    }
-
-    function saveLoopStepsEditor() {
-      if (!currentEditingLoopNode) {
-        closeLoopStepsEditor();
-        return;
-      }
-      const textarea = document.getElementById("loop-steps-textarea");
-      const text = String(textarea.value || "").trim();
-      if (!text) {
-        currentEditingLoopNode.properties.steps = "[]";
-      } else {
-        try {
-          const parsed = JSON.parse(text);
-          if (!Array.isArray(parsed)) throw new Error("循环步骤必须是数组");
-          for (let i = 0; i < parsed.length; i++) {
-            const item = parsed[i];
-            if (!item || typeof item !== "object") throw new Error(`第 ${i + 1} 步不是对象`);
-            const t = normalizeLoopStepType(item.type);
-            if (!t) throw new Error(`第 ${i + 1} 步缺少 type`);
-            if (!isValidLoopStepType(t)) {
-              throw new Error(`第 ${i + 1} 步 type 无效：${t}（需 Tap/Swipe/Screenshot/Wait）`);
-            }
-            item.type = t;
-          }
-          currentEditingLoopNode.properties.steps = JSON.stringify(parsed, null, 2);
-        } catch (err) {
-          const msg = err && err.message ? err.message : "未知错误";
-          setStatus("保存失败：" + msg);
-          return;
-        }
-      }
-      syncLoopStepsPreview(currentEditingLoopNode);
-      setStatus("循环步骤配置已保存");
-      closeLoopStepsEditor();
     }
 
     function normalizeRegionsText(value) {
@@ -2433,11 +2250,6 @@
           closeImageLightbox();
           return;
         }
-        const loopStepsModal = document.getElementById("loop-steps-modal");
-        if (loopStepsModal && !loopStepsModal.classList.contains("hidden")) {
-          closeLoopStepsEditor();
-          return;
-        }
         const workflowPicker = document.getElementById("workflow-picker-modal");
         if (!workflowPicker.classList.contains("hidden")) {
           closeWorkflowPicker();
@@ -2475,14 +2287,6 @@
     const localWorkflowInput = document.getElementById("workflow-local-file");
     if (localWorkflowInput) {
       localWorkflowInput.addEventListener("change", handleLocalWorkflowFileChange);
-    }
-    const loopStepsModal = document.getElementById("loop-steps-modal");
-    if (loopStepsModal) {
-      loopStepsModal.addEventListener("click", (event) => {
-        if (event.target === loopStepsModal) {
-          closeLoopStepsEditor();
-        }
-      });
     }
     const imageLightboxModal = document.getElementById("image-lightbox-modal");
     if (imageLightboxModal) {
