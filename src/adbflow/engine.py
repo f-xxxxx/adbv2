@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .adb_client import ADBClient
 from .nodes import NODE_REGISTRY, NodeContext, NodeExecutionError
@@ -32,12 +32,17 @@ class WorkflowEngine:
     def __init__(self, adb: ADBClient | None = None) -> None:
         self.adb = adb or ADBClient()
 
-    def run(self, workflow: dict[str, Any]) -> ExecutionResult:
+    def run(
+        self,
+        workflow: dict[str, Any],
+        on_log: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> ExecutionResult:
         if not isinstance(workflow, dict) or not workflow:
             raise WorkflowFormatError("工作流必须是非空对象")
 
         logs: list[str] = []
-        ctx = NodeContext(adb=self.adb, logs=logs)
+        ctx = NodeContext(adb=self.adb, logs=logs, on_log=on_log, on_event=on_event)
         cache: dict[tuple[str, int], Any] = {}
         visiting: set[str] = set()
 
@@ -107,6 +112,13 @@ class WorkflowEngine:
                     ctx=ctx,
                 )
         except (NodeExecutionError, Exception) as exc:
+            ctx.event(
+                "node_error",
+                node_id=node_id,
+                class_type=class_type,
+                display_type=display_type,
+                error=str(exc),
+            )
             raise NodeExecutionError(f"节点 {node_id}（{display_type}）执行失败：{exc}") from exc
         finally:
             visiting.remove(node_id)
@@ -123,9 +135,11 @@ class WorkflowEngine:
         ctx: NodeContext,
     ) -> Any:
         node_impl = NODE_REGISTRY[class_type]()
+        ctx.event("node_start", node_id=node_id, class_type=class_type, display_type=display_type)
         ctx.log(f"[节点 {node_id}] 类型={display_type}，开始执行")
         output = node_impl.run(resolved_inputs, ctx)
         ctx.log(f"[节点 {node_id}] 类型={display_type}，执行完成")
+        ctx.event("node_done", node_id=node_id, class_type=class_type, display_type=display_type)
         return output
 
     def _evaluate_loop_end(

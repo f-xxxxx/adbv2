@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from src.adbflow.adb_client import ADBClient, ADBError
-from src.adbflow.engine import WorkflowEngine, WorkflowFormatError
+from src.adbflow.engine import ExecutionResult, WorkflowEngine, WorkflowFormatError
 from src.adbflow.nodes import NodeExecutionError
 
 app = Flask(__name__, template_folder="web", static_folder="web")
@@ -46,6 +48,65 @@ def run_workflow():
         return jsonify({"ok": False, "error": f"未预期异常：{exc}"}), 500
 
     return jsonify({"ok": True, "logs": result.logs, "outputs": result.outputs})
+
+
+@app.post("/api/run-stream")
+def run_workflow_stream():
+    payload = request.get_json(silent=True) or {}
+    workflow = payload.get("workflow")
+    if not workflow:
+        return jsonify({"ok": False, "error": "请求体中缺少工作流配置"}), 400
+
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+    result_holder: dict[str, ExecutionResult] = {}
+    error_holder: dict[str, str] = {}
+
+    def on_log(line: str) -> None:
+        event_queue.put({"type": "log", "line": line})
+
+    def on_event(evt: dict[str, object]) -> None:
+        event_queue.put({"type": "event", **evt})
+
+    def worker() -> None:
+        try:
+            result = engine.run(workflow, on_log=on_log, on_event=on_event)
+            result_holder["result"] = result
+        except (WorkflowFormatError, NodeExecutionError, ADBError, ValueError) as exc:
+            error_holder["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            error_holder["error"] = f"未预期异常：{exc}"
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    @stream_with_context
+    def generate():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield json.dumps(item, ensure_ascii=False) + "\n"
+
+        if "error" in error_holder:
+            yield json.dumps({"type": "error", "error": error_holder["error"]}, ensure_ascii=False) + "\n"
+            return
+
+        result = result_holder.get("result")
+        if result is None:
+            yield json.dumps({"type": "error", "error": "执行结果为空"}, ensure_ascii=False) + "\n"
+            return
+
+        yield json.dumps(
+            {
+                "type": "result",
+                "outputs": result.outputs,
+                "logs": result.logs,
+            },
+            ensure_ascii=False,
+        ) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson")
 
 
 @app.get("/api/workflow/default")

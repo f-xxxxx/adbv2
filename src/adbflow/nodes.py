@@ -26,9 +26,24 @@ class NodeExecutionError(RuntimeError):
 class NodeContext:
     adb: ADBClient
     logs: list[str]
+    on_log: Callable[[str], None] | None = None
+    on_event: Callable[[dict[str, Any]], None] | None = None
 
     def log(self, text: str) -> None:
         self.logs.append(text)
+        if self.on_log is not None:
+            try:
+                self.on_log(text)
+            except Exception:
+                pass
+
+    def event(self, event_type: str, **payload: Any) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event({"event": event_type, **payload})
+        except Exception:
+            pass
 
 
 class BaseNode:
