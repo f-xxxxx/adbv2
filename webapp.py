@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -88,6 +91,77 @@ def load_workflow():
     except Exception as exc:
         return jsonify({"ok": False, "error": f"读取工作流失败：{exc}"}), 500
     return jsonify({"ok": True, "workflow": workflow, "name": safe_name, "path": str(workflow_path)})
+
+
+@app.post("/api/open-location")
+def open_location():
+    payload = request.get_json(silent=True) or {}
+    raw_path = str(payload.get("path", "")).strip()
+    if not raw_path:
+        return jsonify({"ok": False, "error": "缺少路径参数 path"}), 400
+
+    target = Path(raw_path).expanduser()
+    if not target.is_absolute():
+        target = (Path.cwd() / target).resolve()
+    else:
+        target = target.resolve()
+
+    open_dir: Path
+    select_file: Path | None = None
+
+    if target.exists():
+        if target.is_dir():
+            open_dir = target
+        else:
+            open_dir = target.parent
+            select_file = target
+    else:
+        # 路径不存在时，若看起来像文件路径则打开其父目录；否则按目录处理
+        suffix = target.suffix.lower()
+        if suffix in {".xlsx", ".xls", ".csv"}:
+            open_dir = target.parent
+            select_file = target if target.parent.exists() else None
+        else:
+            open_dir = target
+
+    if not open_dir.exists():
+        return jsonify({"ok": False, "error": f"目录不存在：{open_dir}"}), 404
+
+    try:
+        _open_in_file_manager(open_dir, select_file=select_file)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"打开目录失败：{exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "opened_dir": str(open_dir),
+            "selected_file": str(select_file) if select_file else "",
+        }
+    )
+
+
+def _open_in_file_manager(open_dir: Path, select_file: Path | None = None) -> None:
+    if sys.platform.startswith("win"):
+        if select_file and select_file.exists():
+            subprocess.run(
+                ["explorer", "/select,", str(select_file)],
+                check=False,
+                capture_output=True,
+            )
+        else:
+            os.startfile(str(open_dir))  # type: ignore[attr-defined]
+        return
+
+    if sys.platform == "darwin":
+        if select_file and select_file.exists():
+            subprocess.run(["open", "-R", str(select_file)], check=True, capture_output=True)
+        else:
+            subprocess.run(["open", str(open_dir)], check=True, capture_output=True)
+        return
+
+    # 兜底（Linux 等）
+    subprocess.run(["xdg-open", str(open_dir)], check=True, capture_output=True)
 
 
 if __name__ == "__main__":

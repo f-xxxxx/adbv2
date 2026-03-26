@@ -1002,9 +1002,10 @@
       this.addWidget("toggle", "启用显卡加速", this.properties.gpu, (v) => this.properties.gpu = !!v);
       this.addWidget("toggle", "识别全部图片", this.properties.use_all_images, (v) => this.properties.use_all_images = !!v);
       this.addWidget("text", "图片文件夹", this.properties.image_dir, (v) => this.properties.image_dir = v);
+      this.addWidget("button", "打开图片文件位置", "", () => openOcrImageLocation(this));
       this.addWidget("button", "编辑识别区域(多行)", "", () => openRegionsEditor(this));
       this.__regionsPreviewWidget = this.addWidget("text", "区域摘要", buildRegionsPreview(this.properties.regions), () => {});
-      this.size = [360, 210];
+      this.size = [360, 240];
     }
 
     function ExcelNode() {
@@ -1012,7 +1013,8 @@
       this.properties = { output_path: "outputs/ocr_result.xlsx" };
       makeIO(this, true);
       this.addWidget("text", "导出文件路径", this.properties.output_path, (v) => this.properties.output_path = v);
-      this.size = [280, 90];
+      this.addWidget("button", "打开文件所在位置", "", () => openExcelOutputLocation(this));
+      this.size = [300, 120];
     }
 
     function PreviewNode() {
@@ -1464,6 +1466,59 @@
       } catch (err) {
         log("刷新设备失败: " + err.message);
         setStatus("设备刷新失败");
+      }
+    }
+
+    async function openExcelOutputLocation(node) {
+      const outputPath = String((node && node.properties && node.properties.output_path) || "outputs/ocr_result.xlsx").trim();
+      if (!outputPath) {
+        setStatus("请先配置导出文件路径");
+        return;
+      }
+      try {
+        setStatus("正在打开文件所在位置...");
+        const res = await fetch("/api/open-location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: outputPath })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "打开失败");
+        const openedDir = String(data.opened_dir || "");
+        const selectedFile = String(data.selected_file || "");
+        if (selectedFile) {
+          log(`已打开目录：${openedDir}（已定位文件）`);
+        } else {
+          log(`已打开目录：${openedDir}`);
+        }
+        setStatus("已打开文件所在位置");
+      } catch (err) {
+        log("打开文件所在位置失败: " + err.message);
+        setStatus("打开文件所在位置失败");
+      }
+    }
+
+    async function openOcrImageLocation(node) {
+      let imageDir = String((node && node.properties && node.properties.image_dir) || "").trim();
+      if (!imageDir) {
+        imageDir = "outputs/screenshots";
+        log("文字识别节点未设置图片文件夹，尝试打开默认目录：outputs/screenshots");
+      }
+      try {
+        setStatus("正在打开图片文件位置...");
+        const res = await fetch("/api/open-location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: imageDir })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "打开失败");
+        const openedDir = String(data.opened_dir || "");
+        log(`已打开图片目录：${openedDir}`);
+        setStatus("已打开图片文件位置");
+      } catch (err) {
+        log("打开图片文件位置失败: " + err.message);
+        setStatus("打开图片文件位置失败");
       }
     }
 
