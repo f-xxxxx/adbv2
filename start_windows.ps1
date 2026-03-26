@@ -1,10 +1,10 @@
 $ErrorActionPreference = "Stop"
 
-# 切换到脚本所在目录（项目根目录）
+# Go to script directory (project root)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-# 选择 Python 命令
+# Pick python launcher
 $PythonCmd = $null
 if (Get-Command py -ErrorAction SilentlyContinue) {
     $PythonCmd = "py -3"
@@ -13,27 +13,27 @@ elseif (Get-Command python -ErrorAction SilentlyContinue) {
     $PythonCmd = "python"
 }
 else {
-    throw "未找到 Python，请先安装 Python 3.10+ 并加入 PATH。"
+    throw "Python was not found. Please install Python 3.10+ and add it to PATH."
 }
 
-# 首次创建虚拟环境
+# Create venv if missing
 if (-not (Test-Path ".venv")) {
-    Write-Host "创建虚拟环境 .venv ..."
+    Write-Host "Creating virtual environment .venv ..."
     Invoke-Expression "$PythonCmd -m venv .venv"
 }
 
-# 激活虚拟环境
+# Activate venv
 $ActivateScript = Join-Path $ScriptDir ".venv\Scripts\Activate.ps1"
 if (-not (Test-Path $ActivateScript)) {
-    throw "未找到虚拟环境激活脚本：$ActivateScript"
+    throw "Activate script was not found: $ActivateScript"
 }
 . $ActivateScript
 
-# 安装依赖（若已安装会很快跳过）
+# Install deps
 pip install -r requirements.txt
 
-# 可选：显示设备列表，确认 adb 可用
+# Optional: list adb devices
 adb devices
 
-# 启动 Web UI
+# Start Web UI
 python webapp.py
