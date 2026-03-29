@@ -15,9 +15,18 @@ const graph = new LGraph();
     let bottomCollapsed = true;
     let activeBottomTab = "logs";
     let currentEditingOcrNode = null;
+    let currentEditingExportNode = null;
     let regionHelperReady = false;
     let tapPickerReady = false;
+    let swipePickerReady = false;
     let workflowRunning = false;
+    const scheduleListState = {
+      items: [],
+      page: 1,
+      pageSize: 6,
+      autoRefreshTimer: null
+    };
+    let currentScheduleReportPath = "";
     const regionHelper = {
       image: null,
       imageName: "",
@@ -43,6 +52,18 @@ const graph = new LGraph();
       offsetY: 0,
       selectedX: null,
       selectedY: null
+    };
+    const swipePicker = {
+      node: null,
+      image: null,
+      imageName: "",
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      startX: null,
+      startY: null,
+      endX: null,
+      endY: null
     };
 
     const CLASS_MAP = {
@@ -134,7 +155,7 @@ const graph = new LGraph();
 
     function SwipeNode() {
       this.title = "滑动节点";
-      this.properties = { direction: "up", duration_ms: 350, distance_px: 120 };
+      this.properties = { direction: "up", duration_ms: 350, distance_px: 120, x: null, y: null };
       makeIO(this, true);
       this.addWidget(
         "combo",
@@ -145,7 +166,16 @@ const graph = new LGraph();
       );
       this.addWidget("number", "滑动时长(毫秒)", this.properties.duration_ms, (v) => this.properties.duration_ms = Number(v));
       this.addWidget("number", "滑动像素", this.properties.distance_px, (v) => this.properties.distance_px = Number(v));
-      this.size = [240, 120];
+      this.addWidget("text", "起点X(可选)", this.properties.x == null ? "" : String(this.properties.x), (v) => {
+        const txt = String(v || "").trim();
+        this.properties.x = txt === "" ? null : Number(txt);
+      });
+      this.addWidget("text", "起点Y(可选)", this.properties.y == null ? "" : String(this.properties.y), (v) => {
+        const txt = String(v || "").trim();
+        this.properties.y = txt === "" ? null : Number(txt);
+      });
+      this.addWidget("button", "图片取点(起止)", "", () => openSwipePicker(this));
+      this.size = [280, 200];
     }
 
     function WaitNode() {
@@ -248,11 +278,18 @@ const graph = new LGraph();
 
     function ExcelNode() {
       this.title = "导出表格节点";
-      this.properties = { output_path: "outputs/ocr_result.xlsx" };
+      this.properties = {
+        output_path: "outputs/docs/ocr_result.xlsx",
+        append_mode: false,
+        dedup_keys: ["图片"]
+      };
       makeIO(this, true);
       this.addWidget("text", "导出文件路径", this.properties.output_path, (v) => this.properties.output_path = v);
+      this.addWidget("toggle", "增量导出", this.properties.append_mode, (v) => this.properties.append_mode = !!v);
+      this.addWidget("button", "选择去重键", "", () => openDedupKeysEditor(this));
+      this.__dedupPreviewWidget = this.addWidget("text", "去重键摘要", buildDedupKeysPreview(this.properties.dedup_keys), () => {});
       this.addWidget("button", "打开文件所在位置", "", () => openExcelOutputLocation(this));
-      this.size = [300, 120];
+      this.size = [360, 170];
     }
 
     function PreviewNode() {
@@ -634,6 +671,8 @@ const graph = new LGraph();
         if (widgets[0]) widgets[0].value = directionValueToLabel(node.properties.direction || "up");
         if (widgets[1]) widgets[1].value = Number(node.properties.duration_ms ?? 350);
         if (widgets[2]) widgets[2].value = Number(node.properties.distance_px ?? 120);
+        if (widgets[3]) widgets[3].value = node.properties.x == null ? "" : String(node.properties.x);
+        if (widgets[4]) widgets[4].value = node.properties.y == null ? "" : String(node.properties.y);
       } else if (ct === "Wait") {
         if (widgets[0]) widgets[0].value = Number(node.properties.duration_sec ?? 0.8);
       } else if (ct === "Screenshot") {
@@ -658,7 +697,9 @@ const graph = new LGraph();
         if (widgets[3]) widgets[3].value = node.properties.image_dir || "";
         syncOcrRegionsPreview(node);
       } else if (ct === "ExportExcel") {
-        if (widgets[0]) widgets[0].value = node.properties.output_path || "outputs/ocr_result.xlsx";
+        if (widgets[0]) widgets[0].value = node.properties.output_path || "outputs/docs/ocr_result.xlsx";
+        if (widgets[1]) widgets[1].value = !!node.properties.append_mode;
+        syncExportDedupPreview(node);
       } else if (ct === "PreviewExcel") {
         if (widgets[0]) widgets[0].value = Number(node.properties.max_rows ?? 10);
       } else if (ct === "PreviewImages") {
@@ -680,6 +721,14 @@ const graph = new LGraph();
         const classType = CLASS_MAP[node.type];
         if (!classType) continue;
         const inputs = { ...(node.properties || {}) };
+        if (classType === "Swipe") {
+          const xNum = Number(inputs.x);
+          const yNum = Number(inputs.y);
+          if (!Number.isFinite(xNum)) delete inputs.x;
+          else inputs.x = xNum;
+          if (!Number.isFinite(yNum)) delete inputs.y;
+          else inputs.y = yNum;
+        }
         const inputPort = node.inputs && node.inputs[0];
         if (inputPort && inputPort.link != null) {
           const lk = links.get(inputPort.link);
@@ -708,7 +757,7 @@ const graph = new LGraph();
     }
 
     async function openExcelOutputLocation(node) {
-      const outputPath = String((node && node.properties && node.properties.output_path) || "outputs/ocr_result.xlsx").trim();
+      const outputPath = String((node && node.properties && node.properties.output_path) || "outputs/docs/ocr_result.xlsx").trim();
       if (!outputPath) {
         setStatus("请先配置导出文件路径");
         return;
@@ -866,7 +915,11 @@ const graph = new LGraph();
         const fallbackData = await fallbackRes.json();
         if (!fallbackData.ok) throw new Error(fallbackData.error || "执行失败");
         for (const line of (fallbackData.logs || [])) log(line);
-        return { outputs: fallbackData.outputs || {}, logs: fallbackData.logs || [] };
+        return {
+          outputs: fallbackData.outputs || {},
+          logs: fallbackData.logs || [],
+          report_path: fallbackData.report_path || ""
+        };
       }
 
       const reader = res.body.getReader();
@@ -894,7 +947,8 @@ const graph = new LGraph();
             } else if (msg.type === "result") {
               finalResult = {
                 outputs: msg.outputs || {},
-                logs: msg.logs || []
+                logs: msg.logs || [],
+                report_path: msg.report_path || ""
               };
             }
           }
@@ -909,7 +963,8 @@ const graph = new LGraph();
         if (msg.type === "result") {
           finalResult = {
             outputs: msg.outputs || {},
-            logs: msg.logs || []
+            logs: msg.logs || [],
+            report_path: msg.report_path || ""
           };
         }
       }
@@ -943,6 +998,9 @@ const graph = new LGraph();
         const elapsedSec = ((performance.now() - runStartedAt) / 1000).toFixed(2);
         log("执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
         log(`执行耗时: ${elapsedSec} 秒`);
+        if (data.report_path) {
+          log(`执行报告: ${data.report_path}`);
+        }
         applyPreviewImagesToNodes(data.outputs || {});
         renderPreviewTable(data.outputs || {});
         setStatus("执行完成");
@@ -967,6 +1025,403 @@ const graph = new LGraph();
         const msg = err && err.message ? err.message : String(err);
         log("保存配置失败: " + msg);
         setStatus("配置保存失败");
+      }
+    }
+
+    function openScheduleModal() {
+      const workflow = serializeWorkflow();
+      if (!Object.keys(workflow).length) {
+        setStatus("画布为空，无法创建调度");
+        return;
+      }
+      const intervalInput = document.getElementById("schedule-interval-input");
+      const maxRunsInput = document.getElementById("schedule-max-runs-input");
+      if (intervalInput) intervalInput.value = "300";
+      if (maxRunsInput) maxRunsInput.value = "0";
+      const modal = document.getElementById("schedule-modal");
+      if (modal) modal.classList.remove("hidden");
+      setStatus("请设置调度间隔和执行批次");
+    }
+
+    function closeScheduleModal() {
+      const modal = document.getElementById("schedule-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    function createScheduleTask() {
+      openScheduleModal();
+    }
+
+    async function submitScheduleTask() {
+      const workflow = serializeWorkflow();
+      if (!Object.keys(workflow).length) {
+        setStatus("画布为空，无法创建调度");
+        return;
+      }
+      const intervalInput = document.getElementById("schedule-interval-input");
+      const maxRunsInput = document.getElementById("schedule-max-runs-input");
+      const intervalSec = Number(intervalInput ? intervalInput.value : "");
+      const maxRuns = Number(maxRunsInput ? maxRunsInput.value : "");
+      if (!Number.isFinite(intervalSec) || intervalSec < 10) {
+        setStatus("间隔秒数无效，必须 >= 10");
+        return;
+      }
+      if (!Number.isFinite(maxRuns) || maxRuns < 0) {
+        setStatus("执行批次无效，必须 >= 0");
+        return;
+      }
+      try {
+        const res = await fetch("/api/schedules", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workflow,
+            interval_sec: Math.trunc(intervalSec),
+            max_runs: Math.trunc(maxRuns)
+          })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "创建调度失败");
+        const planText = Number(data.item.max_runs || 0) > 0 ? `${data.item.max_runs} 批` : "无限次";
+        log(`调度已创建: ${data.item.id} (${data.item.workflow_name || "工作区工作流"}) 每 ${data.item.interval_sec}s，批次=${planText}`);
+        setStatus("任务调度已创建");
+        closeScheduleModal();
+      } catch (err) {
+        log("创建调度失败: " + err.message);
+        setStatus("创建调度失败");
+      }
+    }
+
+    function showScheduleList() {
+      openScheduleListModal();
+      refreshScheduleList(true);
+    }
+
+    function openScheduleListModal() {
+      const modal = document.getElementById("schedule-list-modal");
+      if (modal) modal.classList.remove("hidden");
+      if (scheduleListState.autoRefreshTimer) clearInterval(scheduleListState.autoRefreshTimer);
+      scheduleListState.autoRefreshTimer = setInterval(() => {
+        const listModal = document.getElementById("schedule-list-modal");
+        if (!listModal || listModal.classList.contains("hidden")) return;
+        refreshScheduleList(false);
+      }, 5000);
+      setStatus("已打开调度列表");
+    }
+
+    function closeScheduleListModal() {
+      const modal = document.getElementById("schedule-list-modal");
+      if (modal) modal.classList.add("hidden");
+      if (scheduleListState.autoRefreshTimer) {
+        clearInterval(scheduleListState.autoRefreshTimer);
+        scheduleListState.autoRefreshTimer = null;
+      }
+    }
+
+    function schedulePrevPage() {
+      if (scheduleListState.page <= 1) return;
+      scheduleListState.page -= 1;
+      renderScheduleList();
+    }
+
+    function scheduleNextPage() {
+      const total = scheduleListState.items.length;
+      const maxPage = Math.max(1, Math.ceil(total / scheduleListState.pageSize));
+      if (scheduleListState.page >= maxPage) return;
+      scheduleListState.page += 1;
+      renderScheduleList();
+    }
+
+    function formatEpochTime(value) {
+      const num = Number(value || 0);
+      if (!Number.isFinite(num) || num <= 0) return "-";
+      const d = new Date(num * 1000);
+      if (Number.isNaN(d.getTime())) return "-";
+      const p2 = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+    }
+
+    function getScheduleExportDirs(item) {
+      const list = Array.isArray(item && item.export_dirs) ? item.export_dirs : [];
+      const dirs = list.map((x) => String(x || "").trim()).filter(Boolean);
+      if (dirs.length) return dirs;
+      const id = String(item && item.id ? item.id : "").trim();
+      if (id) return [`outputs/docs/${id}`];
+      return [];
+    }
+
+    function statusTextFromSchedule(item) {
+      if (!item) return "未知";
+      const raw = String(item.last_status || "").toLowerCase();
+      if (raw === "running") return "执行中";
+      if (raw === "ok") return "成功";
+      if (raw === "error") return "失败";
+      if (raw === "done") return "已完成";
+      if (item.enabled) return "待执行";
+      return "已停止";
+    }
+
+    function statusClassFromSchedule(item) {
+      const raw = String(item && item.last_status ? item.last_status : "").toLowerCase();
+      if (raw === "running") return "running";
+      if (raw === "ok") return "ok";
+      if (raw === "error") return "error";
+      if (raw === "done") return "done";
+      return "";
+    }
+
+    async function refreshScheduleList(resetPage = false) {
+      try {
+        const res = await fetch("/api/schedules");
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "读取调度失败");
+        const items = Array.isArray(data.items) ? data.items : [];
+        items.sort((a, b) => Number(b.last_run_at || 0) - Number(a.last_run_at || 0));
+        scheduleListState.items = items;
+        if (resetPage) scheduleListState.page = 1;
+        const total = scheduleListState.items.length;
+        const maxPage = Math.max(1, Math.ceil(total / scheduleListState.pageSize));
+        if (scheduleListState.page > maxPage) scheduleListState.page = maxPage;
+        renderScheduleList();
+      } catch (err) {
+        log("读取调度失败: " + err.message);
+        setStatus("读取调度失败");
+      }
+    }
+
+    function renderScheduleList() {
+      const body = document.getElementById("schedule-list-body");
+      const summary = document.getElementById("schedule-list-summary");
+      const pageInfo = document.getElementById("schedule-list-page-info");
+      const prevBtn = document.getElementById("schedule-page-prev-btn");
+      const nextBtn = document.getElementById("schedule-page-next-btn");
+      if (!body || !summary || !pageInfo || !prevBtn || !nextBtn) return;
+
+      const total = scheduleListState.items.length;
+      const maxPage = Math.max(1, Math.ceil(total / scheduleListState.pageSize));
+      const page = Math.max(1, Math.min(maxPage, scheduleListState.page));
+      scheduleListState.page = page;
+      summary.textContent = `共 ${total} 条调度任务`;
+      pageInfo.textContent = `${page} / ${maxPage}`;
+      prevBtn.disabled = page <= 1;
+      nextBtn.disabled = page >= maxPage;
+
+      body.innerHTML = "";
+      if (!total) {
+        body.innerHTML = '<div class="workflow-empty">当前没有调度任务</div>';
+        return;
+      }
+
+      const startIdx = (page - 1) * scheduleListState.pageSize;
+      const pageItems = scheduleListState.items.slice(startIdx, startIdx + scheduleListState.pageSize);
+      for (const item of pageItems) {
+        const wrap = document.createElement("div");
+        wrap.className = "schedule-item";
+
+        const top = document.createElement("div");
+        top.className = "schedule-item-top";
+        const idEl = document.createElement("div");
+        idEl.className = "schedule-item-id";
+        idEl.textContent = `ID: ${String(item.id || "-")}`;
+        top.appendChild(idEl);
+        const st = document.createElement("span");
+        st.className = "schedule-status " + statusClassFromSchedule(item);
+        st.textContent = statusTextFromSchedule(item);
+        top.appendChild(st);
+        wrap.appendChild(top);
+
+        const grid = document.createElement("div");
+        grid.className = "schedule-item-grid";
+        const source = String(item.workflow_name || "工作区工作流");
+        const maxRuns = Number(item.max_runs || 0);
+        const runCount = Number(item.run_count || 0);
+        const batchText = maxRuns > 0 ? `${runCount}/${maxRuns}` : `${runCount}/无限`;
+        const exportDirs = getScheduleExportDirs(item);
+        const exportDirText = exportDirs.length > 1 ? `${exportDirs[0]}（另有 ${exportDirs.length - 1} 个）` : (exportDirs[0] || "-");
+        const details = [
+          ["工作流", source],
+          ["间隔", `${Number(item.interval_sec || 0)} 秒`],
+          ["批次", batchText],
+          ["启用", item.enabled ? "是" : "否"],
+          ["导出目录", exportDirText],
+          ["下次执行", formatEpochTime(item.next_run_at)],
+          ["上次执行", formatEpochTime(item.last_run_at)]
+        ];
+        for (const [k, v] of details) {
+          const row = document.createElement("div");
+          const key = document.createElement("span");
+          key.className = "k";
+          key.textContent = `${k}:`;
+          const val = document.createElement("span");
+          val.textContent = String(v);
+          row.appendChild(key);
+          row.appendChild(val);
+          grid.appendChild(row);
+        }
+        wrap.appendChild(grid);
+
+        if (item.last_error) {
+          const err = document.createElement("div");
+          err.style.color = "#ffbcbc";
+          err.style.fontSize = "12px";
+          err.textContent = `错误: ${String(item.last_error)}`;
+          wrap.appendChild(err);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "schedule-item-actions";
+        const toggleBtn = document.createElement("button");
+        toggleBtn.textContent = item.enabled ? "终止" : "开始";
+        toggleBtn.addEventListener("click", async () => {
+          await setScheduleEnabled(String(item.id || ""), !item.enabled);
+        });
+        actions.appendChild(toggleBtn);
+
+        const reportBtn = document.createElement("button");
+        reportBtn.textContent = "查看报告";
+        reportBtn.disabled = !item.last_report_path;
+        reportBtn.addEventListener("click", async () => {
+          await openScheduleReport(String(item.last_report_path || ""));
+        });
+        actions.appendChild(reportBtn);
+
+        const openPathBtn = document.createElement("button");
+        openPathBtn.textContent = "打开报告位置";
+        openPathBtn.disabled = !item.last_report_path;
+        openPathBtn.addEventListener("click", async () => {
+          await openPathInFileManager(String(item.last_report_path || ""));
+        });
+        actions.appendChild(openPathBtn);
+
+        const openExportBtn = document.createElement("button");
+        openExportBtn.textContent = "打开导出文件夹";
+        openExportBtn.disabled = !exportDirs.length;
+        openExportBtn.addEventListener("click", async () => {
+          if (!exportDirs.length) return;
+          await openPathInFileManager(exportDirs[0]);
+          if (exportDirs.length > 1) {
+            setStatus(`已打开第 1 个导出目录，共 ${exportDirs.length} 个`);
+          } else {
+            setStatus("已打开导出目录");
+          }
+        });
+        actions.appendChild(openExportBtn);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.textContent = "删除";
+        deleteBtn.className = "warn";
+        deleteBtn.addEventListener("click", async () => {
+          await deleteScheduleItem(String(item.id || ""));
+        });
+        actions.appendChild(deleteBtn);
+
+        wrap.appendChild(actions);
+        body.appendChild(wrap);
+      }
+    }
+
+    async function setScheduleEnabled(scheduleId, enabled) {
+      if (!scheduleId) return;
+      try {
+        const res = await fetch("/api/schedules/toggle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: scheduleId, enabled: !!enabled })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "更新状态失败");
+        setStatus(enabled ? "调度已开始" : "调度已终止");
+        await refreshScheduleList(false);
+      } catch (err) {
+        log("更新调度状态失败: " + err.message);
+        setStatus("更新调度状态失败");
+      }
+    }
+
+    async function deleteScheduleItem(scheduleId) {
+      if (!scheduleId) return;
+      const yes = window.confirm("确认删除该调度任务吗？");
+      if (!yes) return;
+      try {
+        const res = await fetch(`/api/schedules/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "删除失败");
+        setStatus("调度任务已删除");
+        await refreshScheduleList(false);
+      } catch (err) {
+        log("删除调度任务失败: " + err.message);
+        setStatus("删除调度任务失败");
+      }
+    }
+
+    async function openPathInFileManager(path) {
+      if (!path) return;
+      try {
+        const res = await fetch("/api/open-location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "打开失败");
+      } catch (err) {
+        log("打开路径失败: " + err.message);
+        setStatus("打开路径失败");
+      }
+    }
+
+    async function openScheduleReport(path) {
+      if (!path) return;
+      try {
+        const res = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "读取报告失败");
+        const report = data.report || {};
+        const metaEl = document.getElementById("schedule-report-meta");
+        const contentEl = document.getElementById("schedule-report-content");
+        const pathEl = document.getElementById("schedule-report-path");
+        if (!metaEl || !contentEl || !pathEl) return;
+        currentScheduleReportPath = String(data.path || path);
+        pathEl.textContent = currentScheduleReportPath;
+        pathEl.title = currentScheduleReportPath;
+        metaEl.textContent = `状态: ${report.ok ? "成功" : "失败"} | 开始: ${report.started_at || "-"} | 结束: ${report.ended_at || "-"} | 耗时: ${report.elapsed_sec || 0}s`;
+        contentEl.textContent = JSON.stringify(report, null, 2);
+        const modal = document.getElementById("schedule-report-modal");
+        if (modal) modal.classList.remove("hidden");
+        setStatus("已打开调度执行报告");
+      } catch (err) {
+        log("读取调度报告失败: " + err.message);
+        setStatus("读取调度报告失败");
+      }
+    }
+
+    function closeScheduleReportModal() {
+      currentScheduleReportPath = "";
+      const modal = document.getElementById("schedule-report-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    async function openCurrentScheduleReportLocation() {
+      if (!currentScheduleReportPath) {
+        setStatus("当前没有可打开的报告路径");
+        return;
+      }
+      await openPathInFileManager(currentScheduleReportPath);
+    }
+
+    async function openReportFolder() {
+      try {
+        const res = await fetch("/api/open-location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: "outputs/reports" })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "打开失败");
+        setStatus("已打开报告目录");
+      } catch (err) {
+        log("打开报告目录失败: " + err.message);
+        setStatus("打开报告目录失败");
       }
     }
 
@@ -1072,6 +1527,177 @@ const graph = new LGraph();
       if (!node || !node.__regionsPreviewWidget) return;
       node.__regionsPreviewWidget.value = buildRegionsPreview(node.properties.regions);
       markCanvasDirty();
+    }
+
+    function normalizeDedupKeysValue(value) {
+      if (Array.isArray(value)) {
+        const arr = value.map((x) => String(x || "").trim()).filter(Boolean);
+        return arr.length ? Array.from(new Set(arr)) : ["图片"];
+      }
+      if (typeof value === "string") {
+        const arr = value.split(",").map((x) => x.trim()).filter(Boolean);
+        return arr.length ? Array.from(new Set(arr)) : ["图片"];
+      }
+      return ["图片"];
+    }
+
+    function buildDedupKeysPreview(value) {
+      const keys = normalizeDedupKeysValue(value);
+      const text = keys.join(", ");
+      if (text.length <= 30) return text;
+      return text.slice(0, 30) + "...";
+    }
+
+    function syncExportDedupPreview(node) {
+      if (!node) return;
+      node.properties.dedup_keys = normalizeDedupKeysValue(node.properties.dedup_keys);
+      if (!node.__dedupPreviewWidget) return;
+      node.__dedupPreviewWidget.value = buildDedupKeysPreview(node.properties.dedup_keys);
+      markCanvasDirty();
+    }
+
+    function parseRegionNamesFromNode(node) {
+      if (!node || CLASS_MAP[node.type] !== "EasyOCR") return [];
+      const raw = node.properties ? node.properties.regions : "";
+      let parsed = [];
+      if (Array.isArray(raw)) {
+        parsed = raw;
+      } else if (typeof raw === "string" && raw.trim()) {
+        try {
+          const x = JSON.parse(raw);
+          if (Array.isArray(x)) parsed = x;
+        } catch (_err) {
+          parsed = [];
+        }
+      }
+      const names = [];
+      const used = new Set();
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const name = String(item.name || "").trim();
+        if (!name || used.has(name)) continue;
+        used.add(name);
+        names.push(name);
+      }
+      return names;
+    }
+
+    function getInputNodeSafe(node, slot = 0) {
+      if (!node) return null;
+      if (typeof node.getInputNode === "function") {
+        const inputNode = node.getInputNode(slot);
+        if (inputNode) return inputNode;
+      }
+      const inputs = node.inputs || [];
+      const linkId = inputs[slot] ? inputs[slot].link : null;
+      if (linkId == null) return null;
+      const links = graph && graph.links ? graph.links : null;
+      if (!links) return null;
+      const lk = links[linkId];
+      if (!lk) return null;
+      const originId = Array.isArray(lk) ? lk[1] : (lk.origin_id != null ? lk.origin_id : lk[1]);
+      if (!Number.isFinite(Number(originId))) return null;
+      return graph.getNodeById(Number(originId));
+    }
+
+    function findUpstreamOcrNode(startNode) {
+      if (!startNode) return null;
+      const visited = new Set();
+      const queue = [startNode];
+      while (queue.length) {
+        const node = queue.shift();
+        if (!node) continue;
+        const nid = Number(node.id);
+        if (visited.has(nid)) continue;
+        visited.add(nid);
+        if (CLASS_MAP[node.type] === "EasyOCR") return node;
+        const prev = getInputNodeSafe(node, 0);
+        if (prev) queue.push(prev);
+      }
+      return null;
+    }
+
+    function collectDedupCandidateKeys(exportNode) {
+      const base = ["图片"];
+      const ocrNode = findUpstreamOcrNode(exportNode);
+      const regionNames = parseRegionNamesFromNode(ocrNode);
+      const selected = normalizeDedupKeysValue(exportNode && exportNode.properties ? exportNode.properties.dedup_keys : []);
+      const all = [...base, ...regionNames, ...selected];
+      const used = new Set();
+      const result = [];
+      for (const k of all) {
+        const key = String(k || "").trim();
+        if (!key || used.has(key)) continue;
+        used.add(key);
+        result.push(key);
+      }
+      return result;
+    }
+
+    function openDedupKeysEditor(node) {
+      currentEditingExportNode = node;
+      const modal = document.getElementById("dedup-keys-modal");
+      const listEl = document.getElementById("dedup-keys-list");
+      if (!modal || !listEl) return;
+      const candidates = collectDedupCandidateKeys(node);
+      const selected = new Set(normalizeDedupKeysValue(node && node.properties ? node.properties.dedup_keys : []));
+      listEl.innerHTML = "";
+      for (const key of candidates) {
+        const row = document.createElement("label");
+        row.className = "dedup-key-row";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = key;
+        cb.checked = selected.has(key);
+        const span = document.createElement("span");
+        span.textContent = key;
+        row.appendChild(cb);
+        row.appendChild(span);
+        listEl.appendChild(row);
+      }
+      modal.classList.remove("hidden");
+    }
+
+    function closeDedupKeysEditor() {
+      currentEditingExportNode = null;
+      const modal = document.getElementById("dedup-keys-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    function selectAllDedupKeys() {
+      const listEl = document.getElementById("dedup-keys-list");
+      if (!listEl) return;
+      listEl.querySelectorAll("input[type=checkbox]").forEach((el) => {
+        el.checked = true;
+      });
+    }
+
+    function clearDedupKeysSelection() {
+      const listEl = document.getElementById("dedup-keys-list");
+      if (!listEl) return;
+      listEl.querySelectorAll("input[type=checkbox]").forEach((el) => {
+        el.checked = false;
+      });
+    }
+
+    function saveDedupKeysEditor() {
+      if (!currentEditingExportNode) {
+        closeDedupKeysEditor();
+        return;
+      }
+      const listEl = document.getElementById("dedup-keys-list");
+      if (!listEl) {
+        closeDedupKeysEditor();
+        return;
+      }
+      const keys = [];
+      listEl.querySelectorAll("input[type=checkbox]").forEach((el) => {
+        if (el.checked) keys.push(String(el.value || "").trim());
+      });
+      currentEditingExportNode.properties.dedup_keys = keys.length ? keys : ["图片"];
+      syncExportDedupPreview(currentEditingExportNode);
+      setStatus(`去重键已更新: ${currentEditingExportNode.properties.dedup_keys.join(", ")}`);
+      closeDedupKeysEditor();
     }
 
     function openRegionsEditor(node) {
@@ -1636,6 +2262,214 @@ const graph = new LGraph();
       closeTapPicker();
     }
 
+    function ensureSwipePickerReady() {
+      if (swipePickerReady) return;
+      swipePickerReady = true;
+      const fileInput = document.getElementById("swipe-picker-file");
+      const canvasEl = document.getElementById("swipe-picker-canvas");
+      if (fileInput) fileInput.addEventListener("change", onSwipePickerFileChange);
+      if (canvasEl) canvasEl.addEventListener("click", onSwipePickerCanvasClick);
+      window.addEventListener("resize", () => {
+        const modal = document.getElementById("swipe-picker-modal");
+        if (!modal || modal.classList.contains("hidden")) return;
+        resizeSwipePickerCanvas();
+        drawSwipePickerCanvas();
+      });
+    }
+
+    function openSwipePicker(node) {
+      ensureSwipePickerReady();
+      swipePicker.node = node || null;
+      swipePicker.image = null;
+      swipePicker.imageName = "";
+      swipePicker.scale = 1;
+      swipePicker.offsetX = 0;
+      swipePicker.offsetY = 0;
+      swipePicker.startX = null;
+      swipePicker.startY = null;
+      swipePicker.endX = null;
+      swipePicker.endY = null;
+      const fileInput = document.getElementById("swipe-picker-file");
+      if (fileInput) fileInput.value = "";
+      const modal = document.getElementById("swipe-picker-modal");
+      if (modal) modal.classList.remove("hidden");
+      updateSwipePickerInfo();
+      resizeSwipePickerCanvas();
+      drawSwipePickerCanvas();
+      setStatus("请上传截图，依次点击起点和终点");
+    }
+
+    function closeSwipePicker() {
+      const modal = document.getElementById("swipe-picker-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    function onSwipePickerFileChange(event) {
+      const file = event.target && event.target.files ? event.target.files[0] : null;
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          swipePicker.image = img;
+          swipePicker.imageName = file.name || "";
+          swipePicker.startX = null;
+          swipePicker.startY = null;
+          swipePicker.endX = null;
+          swipePicker.endY = null;
+          resizeSwipePickerCanvas();
+          drawSwipePickerCanvas();
+          updateSwipePickerInfo();
+        };
+        img.src = String(reader.result || "");
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function resizeSwipePickerCanvas() {
+      const canvasEl = document.getElementById("swipe-picker-canvas");
+      if (!canvasEl) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const nextW = Math.max(360, Math.floor(rect.width));
+      const nextH = Math.max(300, Math.floor(rect.height));
+      if (canvasEl.width !== nextW) canvasEl.width = nextW;
+      if (canvasEl.height !== nextH) canvasEl.height = nextH;
+      computeSwipePickerImageLayout();
+    }
+
+    function computeSwipePickerImageLayout() {
+      const canvasEl = document.getElementById("swipe-picker-canvas");
+      if (!canvasEl || !swipePicker.image) return;
+      const pad = 12;
+      const drawW = Math.max(1, canvasEl.width - pad * 2);
+      const drawH = Math.max(1, canvasEl.height - pad * 2);
+      const scale = Math.min(drawW / swipePicker.image.width, drawH / swipePicker.image.height);
+      swipePicker.scale = Math.max(scale, 0.01);
+      swipePicker.offsetX = (canvasEl.width - swipePicker.image.width * swipePicker.scale) * 0.5;
+      swipePicker.offsetY = (canvasEl.height - swipePicker.image.height * swipePicker.scale) * 0.5;
+    }
+
+    function drawSwipePickerCanvas() {
+      const canvasEl = document.getElementById("swipe-picker-canvas");
+      if (!canvasEl) return;
+      const ctx = canvasEl.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      ctx.fillStyle = "#111318";
+      ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+      if (!swipePicker.image) {
+        ctx.fillStyle = "#7f8796";
+        ctx.font = "13px Segoe UI";
+        ctx.fillText("请先上传截图", 16, 26);
+        return;
+      }
+      computeSwipePickerImageLayout();
+      const drawW = swipePicker.image.width * swipePicker.scale;
+      const drawH = swipePicker.image.height * swipePicker.scale;
+      ctx.drawImage(swipePicker.image, swipePicker.offsetX, swipePicker.offsetY, drawW, drawH);
+
+      const drawPoint = (x, y, color, label) => {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const px = swipePicker.offsetX + x * swipePicker.scale;
+        const py = swipePicker.offsetY + y * swipePicker.scale;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = "12px Segoe UI";
+        ctx.fillText(label, px + 8, py - 8);
+        ctx.restore();
+      };
+
+      if (Number.isFinite(swipePicker.startX) && Number.isFinite(swipePicker.startY) &&
+          Number.isFinite(swipePicker.endX) && Number.isFinite(swipePicker.endY)) {
+        const sx = swipePicker.offsetX + swipePicker.startX * swipePicker.scale;
+        const sy = swipePicker.offsetY + swipePicker.startY * swipePicker.scale;
+        const ex = swipePicker.offsetX + swipePicker.endX * swipePicker.scale;
+        const ey = swipePicker.offsetY + swipePicker.endY * swipePicker.scale;
+        ctx.save();
+        ctx.strokeStyle = "#ffd166";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        ctx.restore();
+      }
+      drawPoint(swipePicker.startX, swipePicker.startY, "#44b2ff", "起点");
+      drawPoint(swipePicker.endX, swipePicker.endY, "#ff8a65", "终点");
+    }
+
+    function swipePickerCanvasToImagePoint(event) {
+      const canvasEl = document.getElementById("swipe-picker-canvas");
+      if (!canvasEl || !swipePicker.image) return null;
+      const rect = canvasEl.getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const x = (cx - swipePicker.offsetX) / swipePicker.scale;
+      const y = (cy - swipePicker.offsetY) / swipePicker.scale;
+      if (x < 0 || y < 0 || x > swipePicker.image.width || y > swipePicker.image.height) return null;
+      return { x: Math.round(x), y: Math.round(y) };
+    }
+
+    function onSwipePickerCanvasClick(event) {
+      const p = swipePickerCanvasToImagePoint(event);
+      if (!p) return;
+      if (!Number.isFinite(swipePicker.startX) || !Number.isFinite(swipePicker.startY)) {
+        swipePicker.startX = p.x;
+        swipePicker.startY = p.y;
+      } else {
+        swipePicker.endX = p.x;
+        swipePicker.endY = p.y;
+      }
+      updateSwipePickerInfo();
+      drawSwipePickerCanvas();
+    }
+
+    function resetSwipePickerPoints() {
+      swipePicker.startX = null;
+      swipePicker.startY = null;
+      swipePicker.endX = null;
+      swipePicker.endY = null;
+      updateSwipePickerInfo();
+      drawSwipePickerCanvas();
+    }
+
+    function updateSwipePickerInfo() {
+      const info = document.getElementById("swipe-picker-info");
+      if (!info) return;
+      const s = Number.isFinite(swipePicker.startX) ? `${swipePicker.startX},${swipePicker.startY}` : "未设置";
+      const e = Number.isFinite(swipePicker.endX) ? `${swipePicker.endX},${swipePicker.endY}` : "未设置";
+      info.textContent = `起点: ${s} | 终点: ${e}`;
+    }
+
+    function applySwipePickerPoints() {
+      if (!swipePicker.node) return;
+      if (!Number.isFinite(swipePicker.startX) || !Number.isFinite(swipePicker.startY) ||
+          !Number.isFinite(swipePicker.endX) || !Number.isFinite(swipePicker.endY)) {
+        setStatus("请先选择起点和终点");
+        return;
+      }
+      const dx = swipePicker.endX - swipePicker.startX;
+      const dy = swipePicker.endY - swipePicker.startY;
+      const direction = dy >= 0 ? "down" : "up";
+      const distancePx = Math.max(1, Math.round(Math.abs(dy)));
+      const widgets = swipePicker.node.widgets || [];
+      swipePicker.node.properties.direction = direction;
+      swipePicker.node.properties.distance_px = distancePx;
+      swipePicker.node.properties.x = swipePicker.startX;
+      swipePicker.node.properties.y = swipePicker.startY;
+      if (widgets[0]) widgets[0].value = directionValueToLabel(direction);
+      if (widgets[2]) widgets[2].value = distancePx;
+      if (widgets[3]) widgets[3].value = String(swipePicker.startX);
+      if (widgets[4]) widgets[4].value = String(swipePicker.startY);
+      markCanvasDirty();
+      setStatus(`已写入滑动配置：方向=${directionValueToLabel(direction)}，像素=${distancePx}`);
+      closeSwipePicker();
+    }
+
     function isTypingInTextField(target) {
       if (!target) return false;
       const tag = String(target.tagName || "").toUpperCase();
@@ -1941,6 +2775,31 @@ const graph = new LGraph();
           closeTapPicker();
           return;
         }
+        const swipePickerModal = document.getElementById("swipe-picker-modal");
+        if (swipePickerModal && !swipePickerModal.classList.contains("hidden")) {
+          closeSwipePicker();
+          return;
+        }
+        const dedupModal = document.getElementById("dedup-keys-modal");
+        if (dedupModal && !dedupModal.classList.contains("hidden")) {
+          closeDedupKeysEditor();
+          return;
+        }
+        const scheduleModal = document.getElementById("schedule-modal");
+        if (scheduleModal && !scheduleModal.classList.contains("hidden")) {
+          closeScheduleModal();
+          return;
+        }
+        const scheduleListModal = document.getElementById("schedule-list-modal");
+        if (scheduleListModal && !scheduleListModal.classList.contains("hidden")) {
+          closeScheduleListModal();
+          return;
+        }
+        const scheduleReportModal = document.getElementById("schedule-report-modal");
+        if (scheduleReportModal && !scheduleReportModal.classList.contains("hidden")) {
+          closeScheduleReportModal();
+          return;
+        }
         const modal = document.getElementById("regions-modal");
         if (!modal.classList.contains("hidden")) {
           closeRegionsEditor();
@@ -1985,6 +2844,56 @@ const graph = new LGraph();
         }
       });
     }
+    const swipePickerModal = document.getElementById("swipe-picker-modal");
+    if (swipePickerModal) {
+      swipePickerModal.addEventListener("click", (event) => {
+        if (event.target === swipePickerModal) {
+          closeSwipePicker();
+        }
+      });
+    }
+    const dedupModal = document.getElementById("dedup-keys-modal");
+    if (dedupModal) {
+      dedupModal.addEventListener("click", (event) => {
+        if (event.target === dedupModal) {
+          closeDedupKeysEditor();
+        }
+      });
+    }
+    const scheduleModal = document.getElementById("schedule-modal");
+    if (scheduleModal) {
+      scheduleModal.addEventListener("click", (event) => {
+        if (event.target === scheduleModal) {
+          closeScheduleModal();
+        }
+      });
+    }
+    const scheduleListModal = document.getElementById("schedule-list-modal");
+    if (scheduleListModal) {
+      scheduleListModal.addEventListener("click", (event) => {
+        if (event.target === scheduleListModal) {
+          closeScheduleListModal();
+        }
+      });
+    }
+    const scheduleReportModal = document.getElementById("schedule-report-modal");
+    if (scheduleReportModal) {
+      scheduleReportModal.addEventListener("click", (event) => {
+        if (event.target === scheduleReportModal) {
+          closeScheduleReportModal();
+        }
+      });
+    }
+    const scheduleIntervalInput = document.getElementById("schedule-interval-input");
+    const scheduleMaxRunsInput = document.getElementById("schedule-max-runs-input");
+    const onScheduleInputEnter = (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitScheduleTask();
+      }
+    };
+    if (scheduleIntervalInput) scheduleIntervalInput.addEventListener("keydown", onScheduleInputEnter);
+    if (scheduleMaxRunsInput) scheduleMaxRunsInput.addEventListener("keydown", onScheduleInputEnter);
 
     refreshDevices();
     loadDefaultWorkflow();

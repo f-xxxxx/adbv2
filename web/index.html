@@ -22,6 +22,9 @@
       <button onclick="refreshDevices()"><span class="btn-icon">&#8635;</span>刷新设备</button>
       <button onclick="openWorkflowPicker()"><span class="btn-icon">&#128194;</span>加载工作流</button>
       <button onclick="exportWorkflow()"><span class="btn-icon">&#8681;</span>导出配置</button>
+      <button onclick="createScheduleTask()"><span class="btn-icon">&#9200;</span>创建调度</button>
+      <button onclick="showScheduleList()"><span class="btn-icon">&#128196;</span>调度列表</button>
+      <button onclick="openReportFolder()"><span class="btn-icon">&#128202;</span>执行报告</button>
       <button class="warn" onclick="clearGraph()"><span class="btn-icon">&#128465;</span>清空画布</button>
       <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><span class="btn-icon">&#9654;</span>运行工作流</button>
     </div>
@@ -127,6 +130,24 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="dedup-keys-modal">
+    <div class="modal-panel" style="width:min(560px,92vw)">
+      <div class="modal-head">选择去重键（可多选）</div>
+      <div class="modal-body">
+        <div id="dedup-keys-list" class="dedup-keys-list"></div>
+      </div>
+      <div class="modal-foot">
+        <span>候选项来源：导出节点上游 OCR 节点的识别区域 name</span>
+        <div class="modal-actions">
+          <button onclick="selectAllDedupKeys()">全选</button>
+          <button onclick="clearDedupKeysSelection()">清空</button>
+          <button onclick="closeDedupKeysEditor()">取消</button>
+          <button class="primary" onclick="saveDedupKeysEditor()">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="workflow-picker-modal">
     <div class="modal-panel" style="width:min(760px,94vw)">
       <div class="modal-head">加载工作流（workflows 文件夹）</div>
@@ -142,6 +163,77 @@
           <button onclick="chooseLocalWorkflowFile()">选择本地文件</button>
           <button onclick="refreshWorkflowList()">刷新列表</button>
           <button onclick="closeWorkflowPicker()">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="schedule-modal">
+    <div class="modal-panel schedule-modal-panel">
+      <div class="modal-head">创建调度任务</div>
+      <div class="modal-body">
+        <div class="schedule-form">
+          <label class="schedule-field">
+            <span>执行间隔（秒）</span>
+            <input id="schedule-interval-input" type="number" min="10" step="1" value="300" />
+            <small>最小 10 秒，建议 >= 60 秒</small>
+          </label>
+          <label class="schedule-field">
+            <span>执行批次</span>
+            <input id="schedule-max-runs-input" type="number" min="0" step="1" value="0" />
+            <small>0 表示无限次；大于 0 表示执行指定批次后自动停止</small>
+          </label>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span>将直接使用当前画布中的工作流创建调度</span>
+        <div class="modal-actions">
+          <button onclick="closeScheduleModal()">取消</button>
+          <button class="primary" onclick="submitScheduleTask()">确认创建</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="schedule-list-modal">
+    <div class="modal-panel schedule-list-modal-panel">
+      <div class="modal-head">调度任务列表</div>
+      <div class="modal-body">
+        <div class="schedule-list-toolbar">
+          <span id="schedule-list-summary">共 0 条</span>
+          <div class="modal-actions">
+            <button onclick="refreshScheduleList()">刷新</button>
+          </div>
+        </div>
+        <div id="schedule-list-body" class="schedule-list-body">
+          <div class="workflow-empty">正在读取调度任务...</div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <div class="schedule-page-tools">
+          <button id="schedule-page-prev-btn" onclick="schedulePrevPage()">上一页</button>
+          <span id="schedule-list-page-info">1 / 1</span>
+          <button id="schedule-page-next-btn" onclick="scheduleNextPage()">下一页</button>
+        </div>
+        <div class="modal-actions">
+          <button onclick="closeScheduleListModal()">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="schedule-report-modal">
+    <div class="modal-panel schedule-report-modal-panel">
+      <div class="modal-head">调度执行报告</div>
+      <div class="modal-body">
+        <div id="schedule-report-meta" class="schedule-report-meta">暂无报告</div>
+        <pre id="schedule-report-content" class="schedule-report-content"></pre>
+      </div>
+      <div class="modal-foot">
+        <span id="schedule-report-path" title=""></span>
+        <div class="modal-actions">
+          <button onclick="openCurrentScheduleReportLocation()">打开所在位置</button>
+          <button onclick="closeScheduleReportModal()">关闭</button>
         </div>
       </div>
     </div>
@@ -203,6 +295,36 @@
             <div class="helper-actions">
               <button onclick="closeTapPicker()">取消</button>
               <button class="primary" onclick="applyTapPickerPoint()">写入坐标</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="swipe-picker-modal">
+    <div class="modal-panel" style="width:min(1080px,96vw)">
+      <div class="modal-head">滑动节点取点工具</div>
+      <div class="modal-body">
+        <div class="helper-layout tap-picker-layout">
+          <div class="helper-left">
+            <div class="helper-toolbar">
+              <span id="swipe-picker-info">起点: 未设置 | 终点: 未设置</span>
+              <span>依次点击起点和终点</span>
+            </div>
+            <div class="helper-canvas-wrap">
+              <canvas id="swipe-picker-canvas" class="helper-canvas tap-picker-canvas"></canvas>
+            </div>
+          </div>
+          <div class="helper-right tap-picker-right">
+            <div class="helper-section">
+              <input id="swipe-picker-file" class="helper-file" type="file" accept="image/*" />
+            </div>
+            <div class="helper-empty">起点用于确定滑动起始位置；终点用于确定方向和滑动像素。</div>
+            <div class="helper-actions">
+              <button onclick="resetSwipePickerPoints()">重置</button>
+              <button onclick="closeSwipePicker()">取消</button>
+              <button class="primary" onclick="applySwipePickerPoints()">写入滑动参数</button>
             </div>
           </div>
         </div>

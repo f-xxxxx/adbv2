@@ -451,8 +451,10 @@ class ExportExcelNode(BaseNode):
         payload = self._input_payload(inputs)
         rows = list(payload.get("ocr_rows") or [])
         region_names = [str(x) for x in (payload.get("ocr_region_names") or []) if str(x).strip()]
-        output_path = Path(str(inputs.get("output_path", "outputs/ocr_result.xlsx"))).resolve()
+        output_path = Path(str(inputs.get("output_path", "outputs/docs/ocr_result.xlsx"))).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        append_mode = self._as_bool(inputs.get("append_mode"), False)
+        dedup_keys = _parse_dedup_keys(inputs.get("dedup_keys"))
 
         if not region_names:
             seen_names: set[str] = set()
@@ -475,8 +477,36 @@ class ExportExcelNode(BaseNode):
             df = df[columns]
         else:
             df = pd.DataFrame(columns=columns)
+
+        before_count = 0
+        if append_mode and output_path.exists():
+            try:
+                old_df = pd.read_excel(output_path)
+                before_count = len(old_df)
+            except Exception:
+                old_df = pd.DataFrame(columns=df.columns)
+            merged = pd.concat([old_df, df], ignore_index=True, sort=False)
+            for col in columns:
+                if col not in merged.columns:
+                    merged[col] = ""
+
+            dedup_subset = [k for k in dedup_keys if k in merged.columns]
+            if dedup_subset:
+                merged = merged.drop_duplicates(subset=dedup_subset, keep="first", ignore_index=True)
+            else:
+                merged = merged.drop_duplicates(keep="first", ignore_index=True)
+
+            if "序号" in merged.columns:
+                merged["序号"] = np.arange(1, len(merged) + 1)
+            df = merged[columns]
+
         df.to_excel(output_path, index=False)
-        ctx.log(f"[导出表格节点] 文件={output_path}，行数={len(df)}")
+        append_text = "增量" if append_mode else "覆盖"
+        dedup_text = ",".join(dedup_keys) if dedup_keys else "整行"
+        ctx.log(
+            f"[导出表格节点] 文件={output_path}，模式={append_text}，去重键={dedup_text}，"
+            f"新增={len(table_rows)}，合并前={before_count}，最终={len(df)}"
+        )
         return {**payload, "excel_path": str(output_path), "row_count": len(df)}
 
 
@@ -869,6 +899,18 @@ def _preview_cell_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _parse_dedup_keys(value: Any) -> list[str]:
+    if value is None:
+        return ["图片"]
+    if isinstance(value, list):
+        keys = [str(x).strip() for x in value if str(x).strip()]
+        return keys or ["图片"]
+    text = str(value).strip()
+    if not text:
+        return ["图片"]
+    return [part.strip() for part in text.split(",") if part.strip()]
 
 
 NODE_REGISTRY: dict[str, Callable[[], BaseNode]] = {

@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 outputs/
+schedules/
 .idea/
 .vscode/
 .venv/

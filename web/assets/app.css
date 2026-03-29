@@ -427,6 +427,178 @@
       gap: 8px;
       align-items: center;
     }
+    .schedule-modal-panel {
+      width: min(520px, 92vw);
+    }
+    .schedule-form {
+      display: grid;
+      gap: 12px;
+      padding: 2px 0;
+    }
+    .schedule-field {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      color: #dbe1ea;
+    }
+    .schedule-field span {
+      font-weight: 600;
+      color: #e8edf6;
+    }
+    .schedule-field input {
+      width: 100%;
+      height: 34px;
+      border: 1px solid #4a4f58;
+      border-radius: 6px;
+      padding: 0 10px;
+      background: #1d2026;
+      color: #dbe0e8;
+      font-size: 14px;
+      outline: none;
+    }
+    .schedule-field input:focus {
+      border-color: #6f7f94;
+      box-shadow: 0 0 0 1px rgba(112, 138, 170, 0.35);
+    }
+    .schedule-field small {
+      color: #a2aab8;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .schedule-list-modal-panel {
+      width: min(980px, 96vw);
+    }
+    .schedule-list-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+      color: #bcc4d3;
+      font-size: 12px;
+    }
+    .schedule-list-body {
+      max-height: 60vh;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+    .schedule-item {
+      border: 1px solid #444952;
+      border-radius: 8px;
+      background: #242932;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .schedule-item-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .schedule-item-id {
+      font-size: 12px;
+      color: #8ea1c0;
+      font-family: Consolas, "Cascadia Mono", monospace;
+    }
+    .schedule-status {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #4c5361;
+      background: #313744;
+      color: #d4dced;
+    }
+    .schedule-status.ok {
+      border-color: #3d7a59;
+      background: #244734;
+      color: #c8f0da;
+    }
+    .schedule-status.running {
+      border-color: #8a7b44;
+      background: #4a4025;
+      color: #ffe7ad;
+    }
+    .schedule-status.error {
+      border-color: #8a4f4f;
+      background: #4f2b2b;
+      color: #ffd7d7;
+    }
+    .schedule-status.done {
+      border-color: #5c6c85;
+      background: #2f3a4c;
+      color: #d5e4ff;
+    }
+    .schedule-item-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 1fr));
+      gap: 6px 10px;
+      font-size: 12px;
+      color: #ccd3df;
+    }
+    .schedule-item-grid .k {
+      color: #99a4b8;
+      margin-right: 4px;
+    }
+    .schedule-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .schedule-item-actions button {
+      height: 26px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .schedule-page-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .schedule-report-modal-panel {
+      width: min(860px, 96vw);
+    }
+    .schedule-report-meta {
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #c7cfdd;
+    }
+    .schedule-report-content {
+      margin: 0;
+      max-height: 56vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-size: 12px;
+      line-height: 1.5;
+      border: 1px solid #454b56;
+      border-radius: 6px;
+      background: #1d2026;
+      color: #d6dce8;
+      padding: 10px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+    }
+    #schedule-report-path {
+      max-width: 62%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 12px;
+      color: #9fabbf;
+    }
+    @media (max-width: 900px) {
+      .schedule-item-grid {
+        grid-template-columns: repeat(2, minmax(160px, 1fr));
+      }
+    }
+    @media (max-width: 640px) {
+      .schedule-item-grid {
+        grid-template-columns: 1fr;
+      }
+    }
     .workflow-list {
       display: grid;
       gap: 8px;
@@ -455,6 +627,29 @@
       color: #9aa3b3;
       font-size: 12px;
       padding: 8px 2px;
+    }
+    .dedup-keys-list {
+      display: grid;
+      gap: 6px;
+      max-height: 46vh;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .dedup-key-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid #444952;
+      border-radius: 6px;
+      background: #252a32;
+      font-size: 13px;
+      color: #d6ddeb;
+      cursor: pointer;
+    }
+    .dedup-key-row input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
     }
     .helper-layout {
       display: grid;

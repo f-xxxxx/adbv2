@@ -88,7 +88,7 @@
         "5",
         0
       ],
-      "output_path": "outputs/ocr_result.xlsx"
+      "output_path": "outputs/docs/ocr_result.xlsx"
     }
   },
   "7": {

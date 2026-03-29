@@ -38,7 +38,7 @@
         "1",
         0
       ],
-      "output_path": "outputs/ocr_from_folder.xlsx"
+      "output_path": "outputs/docs/ocr_from_folder.xlsx"
     }
   },
   "3": {
