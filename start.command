@@ -20,4 +20,4 @@ pip install -r requirements.txt
 adb devices
 
 # 启动 Web UI
-python webapp.py
+python3 webapp.py

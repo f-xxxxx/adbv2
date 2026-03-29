@@ -1,0 +1,61 @@
+{
+  "1": {
+    "class_type": "StartDevice",
+    "inputs": {
+      "device_id": ""
+    }
+  },
+  "2": {
+    "class_type": "LoopStart",
+    "inputs": {
+      "input": [
+        "1",
+        0
+      ],
+      "loop_count": 2,
+      "loop_start_wait_sec": 0.6
+    }
+  },
+  "3": {
+    "class_type": "Tap",
+    "inputs": {
+      "input": [
+        "2",
+        0
+      ],
+      "x": 176,
+      "y": 1472
+    }
+  },
+  "4": {
+    "class_type": "InputFill",
+    "inputs": {
+      "input": [
+        "3",
+        0
+      ],
+      "text_channel": "clipboard",
+      "text": "你好，这是一条自动输入内容"
+    }
+  },
+  "5": {
+    "class_type": "Tap",
+    "inputs": {
+      "input": [
+        "4",
+        0
+      ],
+      "x": 1004,
+      "y": 1490
+    }
+  },
+  "6": {
+    "class_type": "LoopEnd",
+    "inputs": {
+      "input": [
+        "5",
+        0
+      ]
+    }
+  }
+}

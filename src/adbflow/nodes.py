@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import secrets
 import shutil
 import time
 from dataclasses import dataclass
@@ -194,6 +195,48 @@ class WaitNode(BaseNode):
         return {**payload, "last_action": "wait", "wait_sec": duration_sec}
 
 
+class InputFillNode(BaseNode):
+    class_type = "InputFill"
+
+    def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        payload = self._input_payload(inputs)
+        device_id = self._device_id(payload)
+        text = str(inputs.get("text", ""))
+        if not text.strip():
+            raise NodeExecutionError("输入内容为空，请先填写 text。")
+
+        text_channel = str(inputs.get("text_channel", "clipboard")).strip().lower() or "clipboard"
+        input_method = ""
+        fallback_used = False
+        try:
+            input_method = ctx.adb.input_text_by_channel(device_id, text, channel=text_channel)
+        except ADBError as exc:
+            if text_channel in {"auto", "adb_keyboard"}:
+                ctx.log(f"[输入节点] 首选通道失败：{exc}")
+                try:
+                    input_method = ctx.adb.input_text_by_channel(device_id, text, channel="clipboard")
+                    fallback_used = True
+                except ADBError as fallback_exc:
+                    raise NodeExecutionError(
+                        f"文本输入失败：ADB Keyboard 与剪贴板通道都不可用。"
+                        f"首选错误：{exc}；降级错误：{fallback_exc}"
+                    ) from fallback_exc
+            else:
+                raise NodeExecutionError(f"文本输入失败：{exc}") from exc
+
+        ctx.log(
+            f"[输入节点] 设备={device_id}，通道={text_channel}{'->clipboard' if fallback_used else ''}，方式={input_method}"
+        )
+        return {
+            **payload,
+            "last_action": "input_text",
+            "input_text": text,
+            "text_channel": text_channel,
+            "input_method": input_method,
+            "fallback_used": fallback_used,
+        }
+
+
 class ScreenshotNode(BaseNode):
     class_type = "Screenshot"
 
@@ -202,6 +245,8 @@ class ScreenshotNode(BaseNode):
         device_id = self._device_id(payload)
         remote_dir = str(inputs.get("remote_dir", "/sdcard/adbflow")).strip()
         prefix = str(inputs.get("prefix", "shot")).strip()
+        if not prefix:
+            prefix = "shot"
         scroll = self._as_bool(inputs.get("scroll"), False)
         scroll_count = max(1, self._as_int(inputs.get("scroll_count"), 1))
         scroll_direction = str(inputs.get("scroll_direction", "up")).strip().lower()
@@ -213,12 +258,14 @@ class ScreenshotNode(BaseNode):
             scroll_distance_px = max(1, self._as_int(inputs.get("scroll_distance_px"), 120))
 
         capture_count = scroll_count if scroll else 1
-        ts = int(time.time())
+        loop_iteration = _payload_loop_iteration(payload)
         ctx.adb.mkdir(device_id, remote_dir)
 
         remote_paths: list[str] = list(payload.get("remote_paths") or [])
         for i in range(capture_count):
-            name = f"{prefix}_{ts}_{i + 1}.png"
+            ts_ms = int(time.time() * 1000)
+            rand_suffix = secrets.token_hex(3)
+            name = f"{prefix}_{ts_ms}_{rand_suffix}_r{loop_iteration}_s{i + 1}.png"
             remote_path = f"{remote_dir.rstrip('/')}/{name}"
             ctx.adb.screenshot_to_remote(device_id, remote_path)
             remote_paths.append(remote_path)
@@ -240,7 +287,7 @@ class ScreenshotNode(BaseNode):
         distance_text = f"，滚动像素={scroll_distance_px}" if scroll and scroll_distance_px is not None else ""
         ctx.log(
             f"[截图节点] 设备={device_id}，张数={capture_count}，滚动={'是' if scroll else '否'}"
-            f"{distance_text}，手机目录={remote_dir}"
+            f"{distance_text}，轮次=r{loop_iteration}，手机目录={remote_dir}"
         )
         return {
             **payload,
@@ -260,7 +307,11 @@ class LoopStartNode(BaseNode):
         loop_count = max(1, self._as_int(inputs.get("loop_count"), 1))
         loop_start_wait_sec = max(0.0, self._as_float(inputs.get("loop_start_wait_sec"), 0.0))
         ctx.log(f"[循环开始节点] 循环次数={loop_count}，轮次间等待={loop_start_wait_sec:.2f}秒")
-        return {**payload}
+        return {
+            **payload,
+            "loop_iteration": 1,
+            "loop_count": loop_count,
+        }
 
 
 class LoopEndNode(BaseNode):
@@ -499,6 +550,15 @@ class PreviewImagesNode(BaseNode):
             "preview_image_total": len(all_files),
             "preview_image_limit": max_images,
         }
+
+
+def _payload_loop_iteration(payload: dict[str, Any]) -> int:
+    value = payload.get("loop_iteration", 1)
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = 1
+    return max(1, parsed)
 
 
 def _direction_swipe_coords(adb: ADBClient, device_id: str, direction: str) -> tuple[int, int, int, int]:
@@ -816,6 +876,7 @@ NODE_REGISTRY: dict[str, Callable[[], BaseNode]] = {
     TapNode.class_type: TapNode,
     SwipeNode.class_type: SwipeNode,
     WaitNode.class_type: WaitNode,
+    InputFillNode.class_type: InputFillNode,
     ScreenshotNode.class_type: ScreenshotNode,
     LoopStartNode.class_type: LoopStartNode,
     LoopEndNode.class_type: LoopEndNode,

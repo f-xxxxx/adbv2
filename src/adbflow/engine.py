@@ -184,7 +184,11 @@ class WorkflowEngine:
             if loop_start_wait_sec > 0:
                 time.sleep(loop_start_wait_sec)
             if loop_state is not None:
-                cache[(loop_start_id, 0)] = loop_state
+                cache[(loop_start_id, 0)] = self._with_loop_meta(
+                    loop_state,
+                    loop_iteration=iter_index,
+                    loop_count=loop_count,
+                )
             self._clear_cache_for_nodes(cache, body_node_ids)
 
             resolved_inputs = {}
@@ -342,6 +346,15 @@ class WorkflowEngine:
         return max(0.0, parsed)
 
     @staticmethod
+    def _with_loop_meta(loop_state: Any, loop_iteration: int, loop_count: int) -> Any:
+        if not isinstance(loop_state, dict):
+            return loop_state
+        next_state = {**loop_state}
+        next_state["loop_iteration"] = max(1, int(loop_iteration))
+        next_state["loop_count"] = max(1, int(loop_count))
+        return next_state
+
+    @staticmethod
     def _node_ids(workflow: dict[str, Any]) -> list[str]:
         # Keep deterministic order. Numeric-like keys first by int value.
         def _key(k: str) -> tuple[int, str]:
@@ -356,6 +369,7 @@ def _class_type_display_name(class_type: str) -> str:
         "Tap": "点击节点",
         "Swipe": "滑动节点",
         "Wait": "等待节点",
+        "InputFill": "输入节点",
         "Screenshot": "截图节点",
         "LoopStart": "循环开始节点",
         "LoopEnd": "循环结束节点",

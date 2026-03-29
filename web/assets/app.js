@@ -47,6 +47,7 @@ const graph = new LGraph();
 
     const CLASS_MAP = {
       "节点/开始": "StartDevice",
+      "节点/输入": "InputFill",
       "节点/点击": "Tap",
       "节点/滑动": "Swipe",
       "节点/等待": "Wait",
@@ -76,6 +77,21 @@ const graph = new LGraph();
       return value === "下滑" ? "down" : "up";
     }
 
+
+    function inputChannelValueToLabel(value) {
+      if (value === "adb_keyboard") return "ADB Keyboard";
+      if (value === "clipboard") return "剪贴板";
+      if (value === "input_text") return "InputText";
+      return "自动";
+    }
+
+    function inputChannelLabelToValue(value) {
+      if (value === "ADB Keyboard") return "adb_keyboard";
+      if (value === "剪贴板") return "clipboard";
+      if (value === "InputText") return "input_text";
+      return "auto";
+    }
+
     function StartNode() {
       this.title = "开始节点";
       this.properties = { device_id: "" };
@@ -96,6 +112,25 @@ const graph = new LGraph();
       this.addWidget("button", "图片取点", "", () => openTapPicker(this));
       this.size = [240, 130];
     }
+
+    function InputNode() {
+      this.title = "输入节点";
+      this.properties = {
+        text_channel: "clipboard",
+        text: "你好，这是一条自动输入内容"
+      };
+      makeIO(this, true);
+      this.addWidget(
+        "combo",
+        "输入通道",
+        inputChannelValueToLabel(this.properties.text_channel),
+        (v) => this.properties.text_channel = inputChannelLabelToValue(v),
+        { values: ["剪贴板", "自动", "ADB Keyboard", "InputText"] }
+      );
+      this.addWidget("text", "输入内容", this.properties.text, (v) => this.properties.text = v);
+      this.size = [340, 130];
+    }
+
 
     function SwipeNode() {
       this.title = "滑动节点";
@@ -382,6 +417,7 @@ const graph = new LGraph();
     }
 
     LiteGraph.registerNodeType("节点/开始", StartNode);
+    LiteGraph.registerNodeType("节点/输入", InputNode);
     LiteGraph.registerNodeType("节点/点击", TapNode);
     LiteGraph.registerNodeType("节点/滑动", SwipeNode);
     LiteGraph.registerNodeType("节点/等待", WaitNode);
@@ -588,6 +624,9 @@ const graph = new LGraph();
 
       if (ct === "StartDevice") {
         if (widgets[0]) widgets[0].value = node.properties.device_id || "";
+      } else if (ct === "InputFill") {
+        if (widgets[0]) widgets[0].value = inputChannelValueToLabel(node.properties.text_channel || "clipboard");
+        if (widgets[1]) widgets[1].value = node.properties.text || "";
       } else if (ct === "Tap") {
         if (widgets[0]) widgets[0].value = Number(node.properties.x ?? 540);
         if (widgets[1]) widgets[1].value = Number(node.properties.y ?? 1600);
@@ -740,6 +779,8 @@ const graph = new LGraph();
           node.color = backup.color;
           node.bgcolor = backup.bgcolor;
           node.boxcolor = backup.boxcolor;
+          node.title_text_color = backup.title_text_color;
+          node.textcolor = backup.textcolor;
           node.__progressBackup = null;
         }
         node.__progressState = "";
@@ -757,23 +798,27 @@ const graph = new LGraph();
         node.__progressBackup = {
           color: node.color,
           bgcolor: node.bgcolor,
-          boxcolor: node.boxcolor
+          boxcolor: node.boxcolor,
+          title_text_color: node.title_text_color,
+          textcolor: node.textcolor
         };
       }
 
       if (state === "running") {
-        node.color = "#f0ad4e";
-        node.bgcolor = "#4a361c";
-        node.boxcolor = "#f0ad4e";
+        node.color = "#7e5618";
+        node.bgcolor = "#3a2d1a";
+        node.boxcolor = "#f2bc63";
       } else if (state === "done") {
-        node.color = "#5fd08d";
-        node.bgcolor = "#1d3b2d";
-        node.boxcolor = "#5fd08d";
+        node.color = "#1f6f49";
+        node.bgcolor = "#17372a";
+        node.boxcolor = "#62d493";
       } else if (state === "error") {
-        node.color = "#ff6b6b";
-        node.bgcolor = "#4f2020";
-        node.boxcolor = "#ff6b6b";
+        node.color = "#8a3030";
+        node.bgcolor = "#412222";
+        node.boxcolor = "#ff7474";
       }
+      node.title_text_color = "#f7fbff";
+      node.textcolor = "#f1f6ff";
       node.__progressState = state;
       markCanvasDirty();
     }
