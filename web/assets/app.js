@@ -9,6 +9,9 @@ const graph = new LGraph();
       canvas.resize();
       fitToView();
     });
+    window.addEventListener("beforeunload", () => {
+      saveWorkflowSnapshot();
+    });
 
     let deviceOptions = [""];
     let sidebarCollapsed = true;
@@ -24,6 +27,7 @@ const graph = new LGraph();
     let schedulerRunning = false;
     let runtimeStatusTimer = null;
     let activeScheduleRunId = "";
+    let allowAutoLoadScheduleOutcome = false;
     const executionProgress = {
       active: false,
       total: 0,
@@ -101,6 +105,7 @@ const graph = new LGraph();
     const CLASS_TO_NODE_MAP = Object.fromEntries(
       Object.entries(CLASS_MAP).map(([nodeType, classType]) => [classType, nodeType])
     );
+    const WORKFLOW_SNAPSHOT_KEY = "adbflow:last_workflow:v1";
 
     function makeIO(node, withInput = true) {
       if (withInput) node.addInput("输入", "数据");
@@ -515,12 +520,17 @@ const graph = new LGraph();
       closeImageLightbox();
       log("画布已清空");
       setStatus("画布已清空");
+      clearWorkflowSnapshot();
       clearPreviewTable();
       markCanvasDirty();
     }
 
     async function loadDefaultWorkflow() {
       try {
+        if (restoreWorkflowSnapshot()) {
+          setStatus("已恢复上次工作流");
+          return;
+        }
         setStatus("正在加载默认工作流...");
         await loadWorkflowByApi("/api/workflow/default", "example_workflow.json", false);
         setStatus("默认工作流已加载");
@@ -633,11 +643,14 @@ const graph = new LGraph();
       reader.readAsText(file, "utf-8");
     }
 
-    function importWorkflowToCanvas(workflow) {
+    function importWorkflowToCanvas(workflow, persistSnapshot = true) {
       graph.clear();
       clearReportPanel("执行报告：暂无");
       clearTimelinePanel("运行回放：暂无");
       clearPreviewTable("结果预览：暂无");
+      if (persistSnapshot) {
+        allowAutoLoadScheduleOutcome = false;
+      }
       const idToNode = new Map();
       const entries = Object.entries(workflow || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
 
@@ -678,6 +691,42 @@ const graph = new LGraph();
 
       fitToView();
       markCanvasDirty();
+      if (persistSnapshot) {
+        saveWorkflowSnapshot(workflow);
+      }
+    }
+
+    function saveWorkflowSnapshot(workflow = null) {
+      try {
+        const payload = workflow && typeof workflow === "object" && !Array.isArray(workflow)
+          ? workflow
+          : serializeWorkflow();
+        if (!payload || !Object.keys(payload).length) return;
+        localStorage.setItem(WORKFLOW_SNAPSHOT_KEY, JSON.stringify(payload));
+      } catch (_err) {
+      }
+    }
+
+    function restoreWorkflowSnapshot() {
+      try {
+        const text = localStorage.getItem(WORKFLOW_SNAPSHOT_KEY);
+        if (!text) return false;
+        const payload = JSON.parse(text);
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+        if (!Object.keys(payload).length) return false;
+        importWorkflowToCanvas(payload, false);
+        log("已恢复上次工作流快照");
+        return true;
+      } catch (_err) {
+        return false;
+      }
+    }
+
+    function clearWorkflowSnapshot() {
+      try {
+        localStorage.removeItem(WORKFLOW_SNAPSHOT_KEY);
+      } catch (_err) {
+      }
     }
 
     function isLinkRef(value) {
@@ -903,6 +952,9 @@ const graph = new LGraph();
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "状态读取失败");
         schedulerRunning = !!data.scheduler_running;
+        if (schedulerRunning) {
+          allowAutoLoadScheduleOutcome = true;
+        }
         updateRunButtonState();
       } catch (err) {
         if (!silent) {
@@ -1116,6 +1168,7 @@ const graph = new LGraph();
       }
       log("开始执行工作流...");
       setStatus("工作流执行中...");
+      allowAutoLoadScheduleOutcome = true;
       cancelRequestedByUser = false;
       workflowRunning = true;
       updateRunButtonState();
@@ -1390,7 +1443,7 @@ const graph = new LGraph();
           const st = String(x.last_status || "").toLowerCase();
           return st !== "running";
         });
-        if (latestDone) {
+        if (latestDone && allowAutoLoadScheduleOutcome) {
           const latestPath = String(latestDone.last_report_path || "").trim();
           const latestKey = buildScheduleOutcomeKey(latestDone);
           if (latestPath && latestKey && latestKey !== lastAutoLoadedScheduleOutcomeKey) {
@@ -1408,6 +1461,7 @@ const graph = new LGraph();
 
     async function refreshLatestScheduleOutcome(silent = true) {
       try {
+        if (!allowAutoLoadScheduleOutcome) return;
         const res = await fetch("/api/schedules");
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "读取调度失败");
@@ -1590,7 +1644,8 @@ const graph = new LGraph();
         return;
       }
       try {
-        importWorkflowToCanvas(scheduleWorkflow);
+        allowAutoLoadScheduleOutcome = true;
+        importWorkflowToCanvas(scheduleWorkflow, false);
         log(`已加载调度工作流到画布: ${String(scheduleId)}`);
         resetNodeProgressHighlight();
         clearPreviewImagesOnNodes();
