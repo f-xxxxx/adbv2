@@ -635,7 +635,9 @@ const graph = new LGraph();
 
     function importWorkflowToCanvas(workflow) {
       graph.clear();
-      clearPreviewTable();
+      clearReportPanel("执行报告：暂无");
+      clearTimelinePanel("运行回放：暂无");
+      clearPreviewTable("结果预览：暂无");
       const idToNode = new Map();
       const entries = Object.entries(workflow || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
 
