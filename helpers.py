@@ -10,6 +10,9 @@ from datetime import datetime
 from pathlib import Path
 
 from src.adbflow.engine import ExecutionResult
+from src.adbflow.error_codes import ErrorCode
+from src.adbflow.observability import log_event
+from src.adbflow.persistence import finish_run, upsert_report
 
 from webapp_state import DOCS_DIR, REPORTS_DIR
 
@@ -21,6 +24,9 @@ def _write_execution_report(
     trigger: str,
     ok: bool,
     error: str,
+    run_id: str = "",
+    schedule_id: str = "",
+    error_code: str = "",
 ) -> Path:
     import time
 
@@ -29,10 +35,13 @@ def _write_execution_report(
     payload = {
         "ok": ok,
         "trigger": trigger,
+        "run_id": run_id,
+        "schedule_id": schedule_id,
         "started_at": datetime.fromtimestamp(started_at).strftime("%Y-%m-%d %H:%M:%S"),
         "ended_at": datetime.fromtimestamp(ended_at).strftime("%Y-%m-%d %H:%M:%S"),
         "elapsed_sec": round(max(0.0, ended_at - started_at), 3),
         "error": error,
+        "error_code": str(error_code or ("" if ok else ErrorCode.RUN_FAILED)),
         "log_count": len(result.logs) if result else 0,
         "output_node_count": len(result.outputs) if result else 0,
         "outputs": result.outputs if result else {},
@@ -41,6 +50,37 @@ def _write_execution_report(
     }
     with report_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    elapsed_sec = payload["elapsed_sec"]
+    status = "ok" if ok else ("cancelled" if "取消" in str(error) else "error")
+    final_error_code = str(error_code or ("" if ok else ErrorCode.RUN_FAILED))
+    try:
+        upsert_report(
+            report_path=str(report_path),
+            run_id=run_id,
+            trigger=trigger,
+            schedule_id=schedule_id,
+            ok=ok,
+            started_at=started_at,
+            ended_at=ended_at,
+            elapsed_sec=float(elapsed_sec),
+            error_code=final_error_code,
+            error_message=error,
+        )
+        if run_id:
+            finish_run(
+                run_id=run_id,
+                status=status,
+                ended_at=ended_at,
+                elapsed_sec=float(elapsed_sec),
+                error_code=final_error_code,
+                error_message=error,
+                log_count=len(result.logs) if result else 0,
+                output_node_count=len(result.outputs) if result else 0,
+                report_path=str(report_path),
+            )
+    except Exception as exc:
+        log_event("report_persist_failed", run_id=run_id, schedule_id=schedule_id, error=str(exc))
     return report_path
 
 

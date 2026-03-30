@@ -7,11 +7,13 @@ from flask import Flask
 from routes.schedules import _ensure_scheduler_started, schedules_bp
 from routes.utils import utils_bp
 from routes.workflows import workflows_bp
+from src.adbflow.observability import setup_logging
 
 app = Flask(__name__, template_folder="web", static_folder="web")
 app.register_blueprint(workflows_bp)
 app.register_blueprint(schedules_bp)
 app.register_blueprint(utils_bp)
+setup_logging()
 
 
 def _warmup_ocr() -> None:

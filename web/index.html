@@ -25,7 +25,7 @@
       <button onclick="createScheduleTask()"><span class="btn-icon">&#9200;</span>创建调度</button>
       <button onclick="showScheduleList()"><span class="btn-icon">&#128196;</span>调度列表</button>
       <button class="warn" onclick="clearGraph()"><span class="btn-icon">&#128465;</span>清空画布</button>
-      <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><span class="btn-icon">&#9654;</span>运行工作流</button>
+      <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><span class="btn-icon">&#9654;</span>执行</button>
     </div>
   </header>
 
@@ -90,6 +90,7 @@
           <div class="tab-buttons">
             <button id="tab-log-btn" class="tab-btn active" onclick="switchBottomTab('logs')">执行日志</button>
             <button id="tab-report-btn" class="tab-btn" onclick="switchBottomTab('report')">执行报告</button>
+            <button id="tab-timeline-btn" class="tab-btn" onclick="switchBottomTab('timeline')">执行回放</button>
             <button id="tab-preview-btn" class="tab-btn" onclick="switchBottomTab('preview')">结果预览</button>
           </div>
           <div class="log-tools">
@@ -113,6 +114,14 @@
           </div>
           <div id="report-body" class="preview-body">
             <div class="preview-empty">执行后会在这里展示执行报告。</div>
+          </div>
+        </div>
+          <div id="timeline-panel" class="preview-panel hidden">
+          <div class="preview-meta">
+            <span id="timeline-meta-text">运行回放：暂无</span>
+          </div>
+          <div id="timeline-body" class="preview-body">
+            <div class="preview-empty">执行后会在这里展示节点级回放时间线。</div>
           </div>
         </div>
         </div>

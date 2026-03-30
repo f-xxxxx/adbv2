@@ -40,6 +40,10 @@ const graph = new LGraph();
     let lastAutoLoadedScheduleReportPath = "";
     let lastAutoLoadedScheduleOutcomeKey = "";
     let currentReportPath = "";
+    let currentTimelineRunId = "";
+    let timelineItems = [];
+    let timelinePlayIndex = -1;
+    let timelinePlayTimer = null;
     const regionHelper = {
       image: null,
       imageName: "",
@@ -870,7 +874,7 @@ const graph = new LGraph();
       }
       btn.classList.remove("warn");
       btn.classList.add("primary");
-      btn.innerHTML = '<span class="btn-icon">&#9654;</span>运行工作流';
+      btn.innerHTML = '<span class="btn-icon">&#9654;</span>执行工作流';
       updateTopbarActionsState();
     }
 
@@ -1114,6 +1118,7 @@ const graph = new LGraph();
       workflowRunning = true;
       updateRunButtonState();
       clearPreviewTable("结果预览：执行中...");
+      clearTimelinePanel("执行回放：执行中...");
       clearPreviewImagesOnNodes();
       resetNodeProgressHighlight();
       startExecutionProgress(workflow);
@@ -1601,6 +1606,7 @@ const graph = new LGraph();
         updateRunButtonState();
         switchBottomTab("report");
         clearReportPanel("执行报告：调度正在执行...");
+        clearTimelinePanel("运行回放：调度正在执行...");
         clearPreviewTable("结果预览：调度执行中...");
         log(`开始执行调度任务: ${String(scheduleId)}`);
         const data = await runScheduleWorkflowStream(scheduleId);
@@ -1834,31 +1840,38 @@ const graph = new LGraph();
     function switchBottomTab(tab) {
       if (tab === "preview") activeBottomTab = "preview";
       else if (tab === "report") activeBottomTab = "report";
+      else if (tab === "timeline") activeBottomTab = "timeline";
       else activeBottomTab = "logs";
       const logs = document.getElementById("logs");
       const preview = document.getElementById("preview-panel");
       const report = document.getElementById("report-panel");
+      const timeline = document.getElementById("timeline-panel");
       const tabLogBtn = document.getElementById("tab-log-btn");
       const tabPreviewBtn = document.getElementById("tab-preview-btn");
       const tabReportBtn = document.getElementById("tab-report-btn");
+      const tabTimelineBtn = document.getElementById("tab-timeline-btn");
       const clearBtn = document.getElementById("clear-log-btn");
 
       const onLogs = activeBottomTab === "logs";
       const onPreview = activeBottomTab === "preview";
       const onReport = activeBottomTab === "report";
+      const onTimeline = activeBottomTab === "timeline";
       logs.classList.toggle("hidden", !onLogs);
       preview.classList.toggle("hidden", !onPreview);
       if (report) report.classList.toggle("hidden", !onReport);
+      if (timeline) timeline.classList.toggle("hidden", !onTimeline);
       tabLogBtn.classList.toggle("active", onLogs);
       tabPreviewBtn.classList.toggle("active", onPreview);
       if (tabReportBtn) tabReportBtn.classList.toggle("active", onReport);
+      if (tabTimelineBtn) tabTimelineBtn.classList.toggle("active", onTimeline);
       clearBtn.classList.toggle("hidden", !onLogs);
       if (onLogs) {
         scrollLogsToLatest(true);
       }
       if (onLogs) setStatus("已切换到执行日志");
       else if (onPreview) setStatus("已切换到结果预览");
-      else setStatus("已切换到执行报告");
+      else if (onReport) setStatus("已切换到执行报告");
+      else setStatus("已切换到运行回放");
     }
 
     function normalizeRegionsText(value) {
@@ -2936,6 +2949,158 @@ const graph = new LGraph();
       currentReportPath = "";
     }
 
+    function clearTimelinePanel(metaText = "运行回放：暂无") {
+      stopTimelinePlayback();
+      timelineItems = [];
+      timelinePlayIndex = -1;
+      currentTimelineRunId = "";
+      const meta = document.getElementById("timeline-meta-text");
+      const body = document.getElementById("timeline-body");
+      if (!meta || !body) return;
+      meta.textContent = metaText;
+      body.innerHTML = '<div class="preview-empty">执行后会在这里展示节点级回放时间线。</div>';
+    }
+
+    function stopTimelinePlayback() {
+      if (timelinePlayTimer) {
+        clearTimeout(timelinePlayTimer);
+        timelinePlayTimer = null;
+      }
+      const body = document.getElementById("timeline-body");
+      if (body) {
+        for (const el of body.querySelectorAll(".timeline-item.active")) {
+          el.classList.remove("active");
+        }
+      }
+      const btn = document.getElementById("timeline-play-btn");
+      if (btn) btn.textContent = "播放回放";
+    }
+
+    function highlightTimelineItem(index) {
+      const body = document.getElementById("timeline-body");
+      if (!body) return;
+      const rows = body.querySelectorAll(".timeline-item");
+      rows.forEach((el) => el.classList.remove("active"));
+      const target = body.querySelector(`.timeline-item[data-index="${index}"]`);
+      if (!target) return;
+      target.classList.add("active");
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      timelinePlayIndex = index;
+    }
+
+    function playTimelineSequence(speed = 1) {
+      stopTimelinePlayback();
+      if (!Array.isArray(timelineItems) || !timelineItems.length) return;
+      const safeSpeed = Math.max(0.2, Number(speed) || 1);
+      const btn = document.getElementById("timeline-play-btn");
+      if (btn) btn.textContent = "停止回放";
+      const firstStart = Number(timelineItems[0].start_ts || 0);
+      let idx = 0;
+
+      const step = () => {
+        if (idx >= timelineItems.length) {
+          stopTimelinePlayback();
+          return;
+        }
+        highlightTimelineItem(idx);
+        const curr = timelineItems[idx];
+        const next = timelineItems[idx + 1];
+        if (!next) {
+          timelinePlayTimer = setTimeout(() => stopTimelinePlayback(), 600);
+          return;
+        }
+        const currStart = Number(curr.start_ts || firstStart);
+        const nextStart = Number(next.start_ts || currStart);
+        const deltaMs = Math.max(120, (nextStart - currStart) * 1000 / safeSpeed);
+        idx += 1;
+        timelinePlayTimer = setTimeout(step, deltaMs);
+      };
+      step();
+    }
+
+    function renderRunTimeline(timeline, sourceText = "执行回放") {
+      const meta = document.getElementById("timeline-meta-text");
+      const body = document.getElementById("timeline-body");
+      if (!meta || !body) return;
+      stopTimelinePlayback();
+
+      const data = timeline && typeof timeline === "object" ? timeline : {};
+      const runId = String(data.run_id || "");
+      const status = String(data.status || "");
+      const nodes = Array.isArray(data.nodes) ? data.nodes.slice() : [];
+      currentTimelineRunId = runId;
+      timelineItems = nodes;
+      timelinePlayIndex = -1;
+
+      if (!nodes.length) {
+        meta.textContent = `${sourceText}：无节点数据`;
+        body.innerHTML = '<div class="preview-empty">当前执行未记录节点级事件。</div>';
+        return;
+      }
+
+      const elapsedMs = Math.max(
+        1,
+        Number(data.elapsed_sec || 0) * 1000,
+        Math.max(...nodes.map((x) => Number(x.duration_ms || 0)))
+      );
+      const startedAtText = formatEpochTime(Number(data.started_at || 0)) || "-";
+      const triggerText = String(data.trigger || "-");
+      meta.textContent = `${sourceText}：${status || "-"} | run_id=${runId || "-"} | 开始 ${startedAtText} | 节点 ${nodes.length}`;
+
+      const controlsHtml = `
+        <div class="timeline-controls">
+          <button id="timeline-play-btn" onclick="toggleTimelinePlayback()">播放回放</button>
+          <label>速度
+            <select id="timeline-speed-select">
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="4" selected>4x</option>
+              <option value="8">8x</option>
+            </select>
+          </label>
+          <span style="font-size:12px;color:#9eb0cb">触发来源: ${escapeHtml(triggerText)}</span>
+        </div>
+      `;
+
+      const listHtml = nodes.map((item, index) => {
+        const nodeId = String(item.node_id || "-");
+        const classType = String(item.class_type || "-");
+        const itemStatus = String(item.status || "ok");
+        const duration = Number(item.duration_ms || 0);
+        const width = Math.max(1, Math.min(100, (duration / elapsedMs) * 100));
+        const errorText = String(item.error || "").trim();
+        const statusCls = itemStatus === "error" ? "error" : "";
+        const rangeText = `${formatEpochTime(Number(item.start_ts || 0))} -> ${formatEpochTime(Number(item.end_ts || 0))}`;
+        const errorHtml = errorText ? `<div class="timeline-error">${escapeHtml(errorText)}</div>` : "";
+        return `
+          <div class="timeline-item ${statusCls}" data-index="${index}">
+            <div class="timeline-item-head">
+              <span class="timeline-title">节点 ${escapeHtml(nodeId)} · ${escapeHtml(classType)}</span>
+              <span class="timeline-status ${statusCls}">${itemStatus === "error" ? "失败" : "成功"}</span>
+            </div>
+            <div class="timeline-metrics">
+              <span>耗时: ${duration.toFixed(1)} ms</span>
+              <span>时间: ${escapeHtml(rangeText)}</span>
+            </div>
+            <div class="timeline-bar-wrap"><div class="timeline-bar" style="width:${width.toFixed(2)}%"></div></div>
+            ${errorHtml}
+          </div>
+        `;
+      }).join("");
+
+      body.innerHTML = `${controlsHtml}<div class="timeline-list">${listHtml}</div>`;
+    }
+
+    function toggleTimelinePlayback() {
+      if (timelinePlayTimer) {
+        stopTimelinePlayback();
+        return;
+      }
+      const speedEl = document.getElementById("timeline-speed-select");
+      const speed = speedEl ? Number(speedEl.value || "1") : 1;
+      playTimelineSequence(speed);
+    }
+
     function renderReportSummaryCard(title, value, status = "") {
       const cls = status ? `report-card ${status}` : "report-card";
       return `<div class="${cls}"><div class="k">${title}</div><div class="v">${value}</div></div>`;
@@ -2993,6 +3158,7 @@ const graph = new LGraph();
     async function openReportInBottomTab(path, sourceText = "执行报告") {
       if (!path) {
         clearReportPanel("执行报告：暂无");
+        clearTimelinePanel("运行回放：暂无");
         switchBottomTab("report");
         return;
       }
@@ -3002,6 +3168,7 @@ const graph = new LGraph();
         if (!data.ok) throw new Error(data.error || "读取报告失败");
         const report = data.report || {};
         renderExecutionReport(report, String(data.path || path), sourceText);
+        await openTimelineByReportPath(String(data.path || path), sourceText);
         if (report && typeof report === "object" && report.outputs && typeof report.outputs === "object") {
           applyPreviewImagesToNodes(report.outputs);
           renderPreviewTable(report.outputs);
@@ -3010,7 +3177,24 @@ const graph = new LGraph();
       } catch (err) {
         log("读取执行报告失败: " + err.message);
         clearReportPanel("执行报告：读取失败");
+        clearTimelinePanel("运行回放：读取失败");
         switchBottomTab("report");
+      }
+    }
+
+    async function openTimelineByReportPath(path, sourceText = "执行回放") {
+      if (!path) {
+        clearTimelinePanel("执行回放：暂无");
+        return;
+      }
+      try {
+        const res = await fetch(`/api/run/timeline?report_path=${encodeURIComponent(path)}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "读取运行回放失败");
+        renderRunTimeline(data.timeline || {}, sourceText);
+      } catch (err) {
+        clearTimelinePanel(`运行回放：${sourceText}读取失败`);
+        log("读取运行回放失败: " + err.message);
       }
     }
 

@@ -3,10 +3,12 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .adb_client import ADBClient
-from .nodes import NODE_REGISTRY, NodeContext, NodeExecutionError, WorkflowCancelledError
+from .node_registry import get_node_factory, init_builtin_nodes, load_plugins_once
+from .nodes import NodeContext, NodeExecutionError, WorkflowCancelledError
 
 
 class WorkflowFormatError(ValueError):
@@ -32,6 +34,8 @@ class WorkflowEngine:
 
     def __init__(self, adb: ADBClient | None = None) -> None:
         self.adb = adb or ADBClient()
+        init_builtin_nodes()
+        load_plugins_once(Path("plugins/nodes").resolve())
 
     def run(
         self,
@@ -86,7 +90,8 @@ class WorkflowEngine:
 
         class_type = str(node.get("class_type", "")).strip()
         display_type = _class_type_display_name(class_type)
-        if class_type not in NODE_REGISTRY:
+        node_factory = get_node_factory(class_type)
+        if node_factory is None:
             raise WorkflowFormatError(f"节点 {node_id} 的节点类型不支持：`{class_type}`")
 
         raw_inputs = node.get("inputs", {})
@@ -118,6 +123,7 @@ class WorkflowEngine:
                     node_id=node_id,
                     class_type=class_type,
                     display_type=display_type,
+                    node_factory=node_factory,
                     resolved_inputs=resolved_inputs,
                     ctx=ctx,
                 )
@@ -143,11 +149,12 @@ class WorkflowEngine:
         node_id: str,
         class_type: str,
         display_type: str,
+        node_factory: Callable[[], Any],
         resolved_inputs: dict[str, Any],
         ctx: NodeContext,
     ) -> Any:
         ctx.ensure_not_cancelled()
-        node_impl = NODE_REGISTRY[class_type]()
+        node_impl = node_factory()
         ctx.event("node_start", node_id=node_id, class_type=class_type, display_type=display_type)
         ctx.log(f"[节点 {node_id}] 类型={display_type}，开始执行")
         output = node_impl.run(resolved_inputs, ctx)
@@ -218,10 +225,14 @@ class WorkflowEngine:
             loop_state = resolved_inputs.get("input", loop_state)
             ctx.log(f"[循环容器] 第 {iter_index}/{loop_count} 轮执行完成")
 
+        loop_end_factory = get_node_factory("LoopEnd")
+        if loop_end_factory is None:
+            raise WorkflowFormatError("节点类型不支持：`LoopEnd`")
         return self._run_node_impl(
             node_id=node_id,
             class_type="LoopEnd",
             display_type=display_type,
+            node_factory=loop_end_factory,
             resolved_inputs=resolved_inputs,
             ctx=ctx,
         )

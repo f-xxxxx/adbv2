@@ -5,6 +5,8 @@ from pathlib import Path
 
 from src.adbflow.adb_client import ADBClient
 from src.adbflow.engine import WorkflowEngine
+from src.adbflow.executor import ExecutionQueue
+from src.adbflow.persistence import init_db
 
 # ---------------------------------------------------------------------------
 # Directory constants
@@ -13,20 +15,23 @@ WORKFLOWS_DIR = Path("workflows").resolve()
 OUTPUTS_DIR = Path("outputs").resolve()
 DOCS_DIR = (OUTPUTS_DIR / "docs").resolve()
 REPORTS_DIR = Path("outputs/reports").resolve()
+DB_PATH = Path("schedules/adbflow.db").resolve()
 SCHEDULES_DIR = Path("schedules").resolve()
-SCHEDULES_PATH = (SCHEDULES_DIR / "schedules.json").resolve()
-LEGACY_SCHEDULES_PATH = (OUTPUTS_DIR / "schedules.json").resolve()
+NODE_PLUGINS_DIR = Path("plugins/nodes").resolve()
 
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 SCHEDULES_DIR.mkdir(parents=True, exist_ok=True)
+NODE_PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+init_db(DB_PATH)
 
 # ---------------------------------------------------------------------------
 # Shared instances
 # ---------------------------------------------------------------------------
 adb = ADBClient()
 engine = WorkflowEngine(adb=adb)
+execution_queue = ExecutionQueue(engine)
 
 # ---------------------------------------------------------------------------
 # Manual-run concurrency state
