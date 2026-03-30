@@ -454,29 +454,36 @@ class EasyOCRNode(BaseNode):
         rows: list[dict[str, Any]] = []
         for image_path in image_paths:
             ctx.ensure_not_cancelled()
-            img = Image.open(image_path).convert("RGB")
-            img_w, img_h = img.size
-            targets = regions or [{"name": "full", "x": 0, "y": 0, "w": img_w, "h": img_h}]
+            with Image.open(image_path) as raw_img:
+                img = raw_img.convert("RGB")
+            try:
+                img_w, img_h = img.size
+                targets = regions or [{"name": "full", "x": 0, "y": 0, "w": img_w, "h": img_h}]
 
-            for region in targets:
-                x, y, w, h = _normalize_region(region, img_w, img_h)
-                crop = img.crop((x, y, x + w, y + h))
-                result = reader.readtext(np.array(crop), detail=1, paragraph=True)
-                texts, confidences = _extract_easyocr_entries(result)
-                text = "\n".join(texts).strip()
-                confidence = round(float(np.mean(confidences)) if confidences else 0.0, 4)
-                rows.append(
-                    {
-                        "image_path": image_path,
-                        "region_name": region.get("name", "region"),
-                        "x": x,
-                        "y": y,
-                        "w": w,
-                        "h": h,
-                        "text": text,
-                        "confidence": confidence,
-                    }
-                )
+                for region in targets:
+                    x, y, w, h = _normalize_region(region, img_w, img_h)
+                    crop = img.crop((x, y, x + w, y + h))
+                    try:
+                        result = reader.readtext(np.array(crop), detail=1, paragraph=True)
+                    finally:
+                        crop.close()
+                    texts, confidences = _extract_easyocr_entries(result)
+                    text = "\n".join(texts).strip()
+                    confidence = round(float(np.mean(confidences)) if confidences else 0.0, 4)
+                    rows.append(
+                        {
+                            "image_path": image_path,
+                            "region_name": region.get("name", "region"),
+                            "x": x,
+                            "y": y,
+                            "w": w,
+                            "h": h,
+                            "text": text,
+                            "confidence": confidence,
+                        }
+                    )
+            finally:
+                img.close()
 
         ctx.log(f"[文字识别节点] 图片数={len(image_paths)}，每图区域数={len(regions) if regions else 1}")
         ocr_image_dir = str(Path(image_paths[0]).parent) if image_paths else ""
@@ -906,18 +913,24 @@ def _collect_images_from_dir(image_dir: str) -> list[str]:
 
 
 def _image_file_to_data_url(image_path: str, max_side: int = 360) -> str:
-    img = Image.open(image_path).convert("RGB")
-    w, h = img.size
-    scale = min(max_side / max(1, w), max_side / max(1, h), 1.0)
-    if scale < 1.0:
-        nw = max(1, int(w * scale))
-        nh = max(1, int(h * scale))
-        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    with Image.open(image_path) as raw_img:
+        img = raw_img.convert("RGB")
+    try:
+        w, h = img.size
+        scale = min(max_side / max(1, w), max_side / max(1, h), 1.0)
+        if scale < 1.0:
+            nw = max(1, int(w * scale))
+            nh = max(1, int(h * scale))
+            resized = img.resize((nw, nh), Image.Resampling.LANCZOS)
+            img.close()
+            img = resized
 
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85, optimize=True)
-    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
+        with io.BytesIO() as buf:
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+    finally:
+        img.close()
 
 
 def _build_export_rows(ocr_rows: list[dict[str, Any]], region_names: list[str]) -> list[dict[str, Any]]:
