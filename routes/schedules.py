@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
+import webapp_state as state
 
 from helpers import (
     _collect_schedule_export_dirs,
@@ -24,7 +25,6 @@ from webapp_state import (
     _MANUAL_RUN_LOCK,
     _MANUAL_RUN_STATE,
     _SCHEDULER_LOCK,
-    _SCHEDULER_STARTED,
     _SCHEDULES,
     _decrement_schedule_running,
     _get_schedule_cancel_event,
@@ -160,22 +160,26 @@ def run_schedule_now():
     if not schedule_id:
         return jsonify({"ok": False, "error": "缺少 id"}), 400
 
-    with _SCHEDULER_LOCK:
-        item = _SCHEDULES.get(schedule_id)
-        if not item:
-            return jsonify({"ok": False, "error": "任务不存在"}), 404
-        if _is_scheduler_running_locked():
-            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+    with _MANUAL_RUN_LOCK:
+        if bool(_MANUAL_RUN_STATE.get("running")):
+            return jsonify({"ok": False, "error": "已有手动执行任务正在运行，请稍后再试"}), 409
 
-        export_dirs_raw = item.get("export_dirs")
-        export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
-        item["run_count"] = 0
-        item["last_run_at"] = 0.0
-        item["last_status"] = "running"
-        item["last_error"] = ""
-        item["last_report_path"] = ""
-        _save_schedules_locked()
-        result_item = dict(item)
+        with _SCHEDULER_LOCK:
+            item = _SCHEDULES.get(schedule_id)
+            if not item:
+                return jsonify({"ok": False, "error": "任务不存在"}), 404
+            if _is_scheduler_running_locked():
+                return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+
+            export_dirs_raw = item.get("export_dirs")
+            export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
+            item["run_count"] = 0
+            item["last_run_at"] = 0.0
+            item["last_status"] = "running"
+            item["last_error"] = ""
+            item["last_report_path"] = ""
+            _save_schedules_locked()
+            result_item = dict(item)
 
     _clear_schedule_outputs(schedule_id, export_dirs)
     _trigger_schedule_run_now(schedule_id)
@@ -194,28 +198,28 @@ def run_schedule_now_stream():
         if bool(_MANUAL_RUN_STATE.get("running")):
             return jsonify({"ok": False, "error": "已有手动执行任务正在运行，请稍后再试"}), 409
 
-    with _SCHEDULER_LOCK:
-        item = _SCHEDULES.get(schedule_id)
-        if not item:
-            return jsonify({"ok": False, "error": "任务不存在"}), 404
-        if _is_scheduler_running_locked():
-            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+        with _SCHEDULER_LOCK:
+            item = _SCHEDULES.get(schedule_id)
+            if not item:
+                return jsonify({"ok": False, "error": "任务不存在"}), 404
+            if _is_scheduler_running_locked():
+                return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
 
-        export_dirs_raw = item.get("export_dirs")
-        export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
-        workflow_name = str(item.get("workflow_name", "")).strip()
-        workflow_data = deepcopy(item.get("workflow_data")) if isinstance(item.get("workflow_data"), dict) else {}
-        max_runs = max(0, int(item.get("max_runs", 0) or 0))
-        interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
+            export_dirs_raw = item.get("export_dirs")
+            export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
+            workflow_name = str(item.get("workflow_name", "")).strip()
+            workflow_data = deepcopy(item.get("workflow_data")) if isinstance(item.get("workflow_data"), dict) else {}
+            max_runs = max(0, int(item.get("max_runs", 0) or 0))
+            interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
 
-        item["run_count"] = 0
-        item["last_run_at"] = 0.0
-        item["last_status"] = "running"
-        item["last_error"] = ""
-        item["last_report_path"] = ""
-        item["next_run_at"] = time.time() + interval_sec
-        _increment_schedule_running()
-        _save_schedules_locked()
+            item["run_count"] = 0
+            item["last_run_at"] = 0.0
+            item["last_status"] = "running"
+            item["last_error"] = ""
+            item["last_report_path"] = ""
+            item["next_run_at"] = time.time() + interval_sec
+            _increment_schedule_running()
+            _save_schedules_locked()
 
     _clear_schedule_outputs(schedule_id, export_dirs)
 
@@ -238,6 +242,7 @@ def run_schedule_now_stream():
         b_err = ""
         b_result: ExecutionResult | None = None
         prepared_workflow: dict[str, object] = {}
+        batch_started_at = time.time()
 
         if isinstance(workflow_data, dict) and workflow_data:
             try:
@@ -281,7 +286,7 @@ def run_schedule_now_stream():
         rp = _write_execution_report(
             workflow=prepared_workflow if b_ok else {},
             result=b_result,
-            started_at=time.time(),
+            started_at=batch_started_at,
             trigger=f"schedule:{schedule_id}:batch:{batch_no}",
             ok=b_ok,
             error=b_err,
@@ -509,7 +514,7 @@ def _save_schedules_locked() -> None:
 
 def _ensure_scheduler_started() -> None:
     with _SCHEDULER_LOCK:
-        if _SCHEDULER_STARTED:
+        if state._SCHEDULER_STARTED:
             return
         _SCHEDULES.clear()
         _SCHEDULES.update(_load_schedules())
@@ -578,40 +583,47 @@ def _scheduler_loop() -> None:
 
 
 def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
-    with _SCHEDULER_LOCK:
-        item = _SCHEDULES.get(schedule_id)
-        if not item:
-            return
-        if not force and not bool(item.get("enabled", True)):
-            return
-        if _is_scheduler_running_locked():
-            item["last_status"] = "busy"
-            item["last_error"] = "已有调度任务执行中，本次触发已跳过"
-            _save_schedules_locked()
-            return
-        workflow_name = str(item.get("workflow_name", "")).strip()
-        workflow_data = item.get("workflow_data")
-        max_runs = max(0, int(item.get("max_runs", 0) or 0))
-        run_count = max(0, int(item.get("run_count", 0) or 0))
-        batch_no = run_count + 1
-        if max_runs > 0 and run_count >= max_runs:
-            item["enabled"] = False
-            item["next_run_at"] = 0.0
-            item["last_status"] = "done"
+    with _MANUAL_RUN_LOCK:
+        manual_running = bool(_MANUAL_RUN_STATE.get("running"))
+        with _SCHEDULER_LOCK:
+            item = _SCHEDULES.get(schedule_id)
+            if not item:
+                return
+            if not force and not bool(item.get("enabled", True)):
+                return
+            if manual_running:
+                item["last_status"] = "busy"
+                item["last_error"] = "已有手动执行任务正在运行，本次调度已跳过"
+                _save_schedules_locked()
+                return
+            if _is_scheduler_running_locked():
+                item["last_status"] = "busy"
+                item["last_error"] = "已有调度任务执行中，本次触发已跳过"
+                _save_schedules_locked()
+                return
+            workflow_name = str(item.get("workflow_name", "")).strip()
+            workflow_data = item.get("workflow_data")
+            max_runs = max(0, int(item.get("max_runs", 0) or 0))
+            run_count = max(0, int(item.get("run_count", 0) or 0))
+            batch_no = run_count + 1
+            if max_runs > 0 and run_count >= max_runs:
+                item["enabled"] = False
+                item["next_run_at"] = 0.0
+                item["last_status"] = "done"
+                item["last_error"] = ""
+                _save_schedules_locked()
+                return
+            interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
+            item["next_run_at"] = time.time() + interval_sec
+            item["last_status"] = "running"
             item["last_error"] = ""
+            if not item.get("export_dirs"):
+                item["export_dirs"] = _collect_schedule_export_dirs(
+                    item.get("workflow_data") if isinstance(item.get("workflow_data"), dict) else {},
+                    schedule_id,
+                )
+            _increment_schedule_running()
             _save_schedules_locked()
-            return
-        interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
-        item["next_run_at"] = time.time() + interval_sec
-        item["last_status"] = "running"
-        item["last_error"] = ""
-        if not item.get("export_dirs"):
-            item["export_dirs"] = _collect_schedule_export_dirs(
-                item.get("workflow_data") if isinstance(item.get("workflow_data"), dict) else {},
-                schedule_id,
-            )
-        _increment_schedule_running()
-        _save_schedules_locked()
 
     started = time.time()
     ok = False
