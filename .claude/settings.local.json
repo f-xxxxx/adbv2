@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [''webapp.py'', ''webapp_state.py'', ''helpers.py'', ''routes/__init__.py'', ''routes/utils.py'', ''routes/workflows.py'', ''routes/schedules.py'', ''src/adbflow/nodes.py'']]\")",
+      "Bash(.venv/Scripts/python -c \"import webapp; print\\(''webapp OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from src.adbflow.runner import parse_args; print\\(''runner OK''\\)\")"
+    ]
+  }
+}

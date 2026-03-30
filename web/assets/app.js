@@ -845,7 +845,11 @@ const graph = new LGraph();
       const locked = workflowRunning || schedulerRunning;
       const buttons = bar.querySelectorAll("button");
       buttons.forEach((btn) => {
-        btn.disabled = locked;
+        if (btn.id === "run-workflow-btn") {
+          btn.disabled = false;
+        } else {
+          btn.disabled = locked;
+        }
       });
     }
 
@@ -857,20 +861,16 @@ const graph = new LGraph();
       const progressText = hasProgress
         ? `执行中 ${Math.min(doneCount, executionProgress.total)}/${executionProgress.total}`
         : "执行中...";
-      if (workflowRunning) {
-        btn.classList.remove("warn");
-        btn.classList.add("primary");
-        btn.innerHTML = `<span class="btn-icon">&#9203;</span>${progressText}`;
+      if (workflowRunning || schedulerRunning) {
+        btn.classList.remove("primary");
+        btn.classList.add("warn");
+        btn.innerHTML = `<span class="btn-icon">&#9209;</span>停止`;
         updateTopbarActionsState();
         return;
       }
       btn.classList.remove("warn");
       btn.classList.add("primary");
-      if (schedulerRunning) {
-        btn.innerHTML = `<span class="btn-icon">&#9203;</span>${progressText}`;
-      } else {
-        btn.innerHTML = '<span class="btn-icon">&#9654;</span>运行工作流';
-      }
+      btn.innerHTML = '<span class="btn-icon">&#9654;</span>运行工作流';
       updateTopbarActionsState();
     }
 
@@ -1098,7 +1098,7 @@ const graph = new LGraph();
         return;
       }
       if (schedulerRunning) {
-        setStatus("调度任务正在执行中，请稍后再手动运行");
+        await cancelRunningWorkflow();
         return;
       }
       const runStartedAt = performance.now();
@@ -1617,9 +1617,16 @@ const graph = new LGraph();
         await refreshRuntimeStatus(true);
       } catch (err) {
         const msg = err && err.message ? String(err.message) : String(err);
-        log("调度执行失败: " + msg);
-        clearPreviewTable("结果预览：调度执行失败");
-        setStatus("调度执行失败");
+        if (msg.includes("已取消") || cancelRequestedByUser) {
+          log("调度任务已停止");
+          clearPreviewTable("结果预览：调度已停止");
+          setStatus("调度已停止");
+        } else {
+          log("调度执行失败: " + msg);
+          clearPreviewTable("结果预览：调度执行失败");
+          setStatus("调度执行失败");
+        }
+        cancelRequestedByUser = false;
         await refreshScheduleList(false);
         await refreshRuntimeStatus(true);
       } finally {

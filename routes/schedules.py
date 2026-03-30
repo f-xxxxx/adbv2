@@ -1,0 +1,684 @@
+from __future__ import annotations
+
+import json
+import queue
+import threading
+import time
+import uuid
+from copy import deepcopy
+from pathlib import Path
+
+from flask import Blueprint, Response, jsonify, request, stream_with_context
+
+from helpers import (
+    _collect_schedule_export_dirs,
+    _prepare_workflow_export_paths,
+    _resolve_report_path,
+    _write_execution_report,
+)
+from webapp_state import (
+    LEGACY_SCHEDULES_PATH,
+    SCHEDULES_DIR,
+    SCHEDULES_PATH,
+    WORKFLOWS_DIR,
+    _MANUAL_RUN_LOCK,
+    _MANUAL_RUN_STATE,
+    _SCHEDULER_LOCK,
+    _SCHEDULER_STARTED,
+    _SCHEDULES,
+    _decrement_schedule_running,
+    _get_schedule_cancel_event,
+    _increment_schedule_running,
+    _is_scheduler_running_locked,
+    _mark_scheduler_started,
+    _set_schedule_cancel_event,
+    engine,
+)
+
+from src.adbflow.engine import ExecutionResult
+
+schedules_bp = Blueprint("schedules", __name__)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
+@schedules_bp.get("/api/schedules")
+def list_schedules():
+    _ensure_scheduler_started()
+    with _SCHEDULER_LOCK:
+        items = sorted(
+            _SCHEDULES.values(),
+            key=lambda x: float(x.get("created_at", 0.0) or 0.0),
+            reverse=True,
+        )
+    return jsonify({"ok": True, "items": items})
+
+
+@schedules_bp.post("/api/schedules")
+def create_schedule():
+    _ensure_scheduler_started()
+    payload = request.get_json(silent=True) or {}
+    workflow_name = str(payload.get("workflow_name", "")).strip()
+    workflow_data = payload.get("workflow")
+    interval_sec = int(payload.get("interval_sec", 300) or 300)
+    max_runs = max(0, int(payload.get("max_runs", 0) or 0))
+    task_name = str(payload.get("task_name", "")).strip()
+    run_now = payload.get("run_now") is True
+    if interval_sec < 10:
+        interval_sec = 10
+
+    workflow_snapshot: dict[str, object] = {}
+    source_name = ""
+    if isinstance(workflow_data, dict) and workflow_data:
+        workflow_snapshot = workflow_data
+        source_name = "工作区工作流"
+    elif workflow_name:
+        workflow_path = (WORKFLOWS_DIR / Path(workflow_name).name).resolve()
+        if workflow_path.parent != WORKFLOWS_DIR or not workflow_path.exists():
+            return jsonify({"ok": False, "error": "工作流文件不存在"}), 404
+        with workflow_path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict) or not loaded:
+            return jsonify({"ok": False, "error": "工作流文件内容无效"}), 400
+        workflow_snapshot = loaded
+        source_name = workflow_path.name
+    else:
+        return jsonify({"ok": False, "error": "缺少 workflow（当前工作区工作流）"}), 400
+
+    schedule_id = uuid.uuid4().hex[:10]
+    now = time.time()
+    if not task_name:
+        task_name = f"调度任务-{schedule_id[:6]}"
+    export_dirs = _collect_schedule_export_dirs(workflow_snapshot, schedule_id)
+    item: dict[str, object] = {
+        "id": schedule_id,
+        "task_name": task_name[:120],
+        "created_at": now,
+        "workflow_name": source_name,
+        "workflow_data": workflow_snapshot,
+        "export_dirs": export_dirs,
+        "interval_sec": interval_sec,
+        "max_runs": max_runs,
+        "run_count": 0,
+        "enabled": True,
+        "next_run_at": now + interval_sec,
+        "last_run_at": 0.0,
+        "last_status": "",
+        "last_error": "",
+        "last_report_path": "",
+    }
+    with _SCHEDULER_LOCK:
+        if run_now and _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+        _SCHEDULES[schedule_id] = item
+        if run_now:
+            item["last_status"] = "running"
+            item["next_run_at"] = time.time() + interval_sec
+        _save_schedules_locked()
+    if run_now:
+        _trigger_schedule_run_now(schedule_id)
+    return jsonify({"ok": True, "item": item})
+
+
+@schedules_bp.post("/api/schedules/toggle")
+def toggle_schedule():
+    _ensure_scheduler_started()
+    payload = request.get_json(silent=True) or {}
+    schedule_id = str(payload.get("id", "")).strip()
+    enabled = bool(payload.get("enabled", True))
+    run_now = payload.get("run_now") is True
+    if not schedule_id:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+    with _SCHEDULER_LOCK:
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if enabled and run_now and _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+        item["enabled"] = enabled
+        if enabled:
+            interval_sec = max(10, int(item.get("interval_sec", 300)))
+            item["next_run_at"] = time.time() + interval_sec
+            if run_now:
+                item["last_status"] = "running"
+                item["last_error"] = ""
+        _save_schedules_locked()
+        result_item = dict(item)
+    if enabled and run_now:
+        _trigger_schedule_run_now(schedule_id)
+    return jsonify({"ok": True, "item": result_item})
+
+
+@schedules_bp.post("/api/schedules/run-now")
+def run_schedule_now():
+    _ensure_scheduler_started()
+    payload = request.get_json(silent=True) or {}
+    schedule_id = str(payload.get("id", "")).strip()
+    if not schedule_id:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+
+    with _SCHEDULER_LOCK:
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+
+        export_dirs_raw = item.get("export_dirs")
+        export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
+        item["run_count"] = 0
+        item["last_run_at"] = 0.0
+        item["last_status"] = "running"
+        item["last_error"] = ""
+        item["last_report_path"] = ""
+        _save_schedules_locked()
+        result_item = dict(item)
+
+    _clear_schedule_outputs(schedule_id, export_dirs)
+    _trigger_schedule_run_now(schedule_id)
+    return jsonify({"ok": True, "item": result_item})
+
+
+@schedules_bp.post("/api/schedules/run-now-stream")
+def run_schedule_now_stream():
+    _ensure_scheduler_started()
+    payload = request.get_json(silent=True) or {}
+    schedule_id = str(payload.get("id", "")).strip()
+    if not schedule_id:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+
+    with _MANUAL_RUN_LOCK:
+        if bool(_MANUAL_RUN_STATE.get("running")):
+            return jsonify({"ok": False, "error": "已有手动执行任务正在运行，请稍后再试"}), 409
+
+    with _SCHEDULER_LOCK:
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+
+        export_dirs_raw = item.get("export_dirs")
+        export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
+        workflow_name = str(item.get("workflow_name", "")).strip()
+        workflow_data = deepcopy(item.get("workflow_data")) if isinstance(item.get("workflow_data"), dict) else {}
+        max_runs = max(0, int(item.get("max_runs", 0) or 0))
+        interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
+
+        item["run_count"] = 0
+        item["last_run_at"] = 0.0
+        item["last_status"] = "running"
+        item["last_error"] = ""
+        item["last_report_path"] = ""
+        item["next_run_at"] = time.time() + interval_sec
+        _increment_schedule_running()
+        _save_schedules_locked()
+
+    _clear_schedule_outputs(schedule_id, export_dirs)
+
+    cancel_event = threading.Event()
+    _set_schedule_cancel_event(cancel_event)
+
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+    result_holder: dict[str, object] = {}
+    error_holder: dict[str, str] = {}
+
+    def on_log(line: str) -> None:
+        event_queue.put({"type": "log", "line": line})
+
+    def on_event(evt: dict[str, object]) -> None:
+        event_queue.put({"type": "event", **evt})
+
+    def _run_single_batch(batch_no: int) -> tuple[bool, str, ExecutionResult | None, str]:
+        """Run one batch and return (ok, err, result, report_path)."""
+        b_ok = False
+        b_err = ""
+        b_result: ExecutionResult | None = None
+        prepared_workflow: dict[str, object] = {}
+
+        if isinstance(workflow_data, dict) and workflow_data:
+            try:
+                prepared_workflow = _prepare_workflow_export_paths(
+                    workflow_data,
+                    trigger="schedule",
+                    schedule_id=schedule_id,
+                    schedule_batch=batch_no,
+                )
+            except Exception as exc:  # noqa: BLE001
+                b_err = str(exc)
+        else:
+            wf_path = (WORKFLOWS_DIR / Path(workflow_name).name).resolve()
+            if wf_path.parent != WORKFLOWS_DIR or not wf_path.exists():
+                b_err = f"调度工作流不存在：{workflow_name}"
+            else:
+                try:
+                    with wf_path.open("r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    prepared_workflow = _prepare_workflow_export_paths(
+                        loaded,
+                        trigger="schedule",
+                        schedule_id=schedule_id,
+                        schedule_batch=batch_no,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    b_err = str(exc)
+
+        if not b_err:
+            try:
+                b_result = engine.run(
+                    prepared_workflow,
+                    on_log=on_log,
+                    on_event=on_event,
+                    cancel_event=cancel_event,
+                )
+                b_ok = True
+            except Exception as exc:  # noqa: BLE001
+                b_err = str(exc)
+
+        rp = _write_execution_report(
+            workflow=prepared_workflow if b_ok else {},
+            result=b_result,
+            started_at=time.time(),
+            trigger=f"schedule:{schedule_id}:batch:{batch_no}",
+            ok=b_ok,
+            error=b_err,
+        )
+        return b_ok, b_err, b_result, str(rp)
+
+    def worker() -> None:
+        total_batches = max(1, max_runs) if max_runs > 0 else 0
+        last_ok = False
+        last_err = ""
+        last_result: ExecutionResult | None = None
+        last_report = ""
+        batch_no = 0
+        cancelled = False
+
+        if total_batches > 0:
+            batch_range = range(1, total_batches + 1)
+        else:
+            # max_runs == 0 means unlimited; but for stream mode run once
+            batch_range = range(1, 2)
+
+        for batch_no in batch_range:
+            if cancel_event.is_set():
+                on_log("--- 调度任务已被用户中止 ---")
+                last_err = "执行已取消"
+                cancelled = True
+                break
+
+            on_log(f"--- 第 {batch_no}/{total_batches or '∞'} 批次开始 ---")
+            last_ok, last_err, last_result, last_report = _run_single_batch(batch_no)
+
+            with _SCHEDULER_LOCK:
+                saved_item = _SCHEDULES.get(schedule_id)
+                if saved_item:
+                    saved_item["last_run_at"] = time.time()
+                    saved_item["run_count"] = batch_no
+                    saved_item["last_error"] = last_err
+                    saved_item["last_report_path"] = last_report
+                    if not last_ok:
+                        saved_item["last_status"] = "error"
+                    elif total_batches > 0 and batch_no < total_batches:
+                        saved_item["last_status"] = "running"
+                    else:
+                        saved_item["last_status"] = "ok"
+                    _save_schedules_locked()
+
+            if not last_ok:
+                # Check if it was a cancellation
+                if cancel_event.is_set() or "已取消" in last_err:
+                    on_log(f"--- 第 {batch_no} 批次已中止 ---")
+                    cancelled = True
+                else:
+                    on_log(f"--- 第 {batch_no} 批次失败，停止后续执行 ---")
+                break
+
+            if total_batches > 0 and batch_no >= total_batches:
+                break
+
+            # Wait interval between batches (interruptible)
+            on_log(f"--- 等待 {interval_sec} 秒后执行下一批次 ---")
+            if _sleep_with_cancel(cancel_event, interval_sec):
+                on_log("--- 调度任务已被用户中止 ---")
+                last_err = "执行已取消"
+                cancelled = True
+                break
+
+        # Final state update
+        _set_schedule_cancel_event(None)
+        with _SCHEDULER_LOCK:
+            _decrement_schedule_running()
+            saved_item = _SCHEDULES.get(schedule_id)
+            if saved_item:
+                if cancelled:
+                    saved_item["last_status"] = "cancelled"
+                    saved_item["last_error"] = "执行已取消"
+                elif last_ok and total_batches > 0 and batch_no >= total_batches:
+                    saved_item["last_status"] = "done"
+                    saved_item["enabled"] = False
+                    saved_item["next_run_at"] = 0.0
+                elif not last_ok:
+                    saved_item["last_status"] = "error"
+                else:
+                    saved_item["last_status"] = "ok"
+                _save_schedules_locked()
+            else:
+                _save_schedules_locked()
+
+        if cancelled:
+            error_holder["error"] = "执行已取消"
+        elif last_ok and last_result is not None:
+            result_holder["result"] = last_result
+            result_holder["report_path"] = last_report
+        else:
+            error_holder["error"] = last_err or "执行失败"
+        event_queue.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    @stream_with_context
+    def generate():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield json.dumps(item, ensure_ascii=False) + "\n"
+
+        if "error" in error_holder:
+            yield json.dumps({"type": "error", "error": error_holder["error"]}, ensure_ascii=False) + "\n"
+            return
+
+        result = result_holder.get("result")
+        if isinstance(result, ExecutionResult):
+            yield json.dumps(
+                {
+                    "type": "result",
+                    "outputs": result.outputs,
+                    "logs": result.logs,
+                    "report_path": result_holder.get("report_path", ""),
+                },
+                ensure_ascii=False,
+            ) + "\n"
+            return
+
+        yield json.dumps({"type": "error", "error": "执行流未返回结果"}, ensure_ascii=False) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson")
+
+
+@schedules_bp.delete("/api/schedules/<schedule_id>")
+def delete_schedule(schedule_id: str):
+    _ensure_scheduler_started()
+    sid = str(schedule_id).strip()
+    with _SCHEDULER_LOCK:
+        existed = _SCHEDULES.pop(sid, None)
+        _save_schedules_locked()
+    if not existed:
+        return jsonify({"ok": False, "error": "任务不存在"}), 404
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Scheduler internals
+# ---------------------------------------------------------------------------
+
+
+def _sleep_with_cancel(cancel_event: threading.Event, seconds: float) -> bool:
+    """Sleep for *seconds*, checking cancel_event every 0.5s. Returns True if cancelled."""
+    remaining = max(0.0, float(seconds))
+    while remaining > 0:
+        if cancel_event.is_set():
+            return True
+        chunk = min(0.5, remaining)
+        time.sleep(chunk)
+        remaining -= chunk
+    return cancel_event.is_set()
+
+
+def _migrate_legacy_schedules_file() -> None:
+    if SCHEDULES_PATH.exists() or not LEGACY_SCHEDULES_PATH.exists():
+        return
+    try:
+        SCHEDULES_DIR.mkdir(parents=True, exist_ok=True)
+        LEGACY_SCHEDULES_PATH.replace(SCHEDULES_PATH)
+    except Exception:
+        return
+
+
+def _load_schedules() -> dict[str, dict[str, object]]:
+    _migrate_legacy_schedules_file()
+    if not SCHEDULES_PATH.exists():
+        return {}
+    try:
+        with SCHEDULES_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for sid, raw in data.items():
+        if not isinstance(raw, dict):
+            continue
+        sid_text = str(sid).strip()
+        if not sid_text:
+            continue
+        item = dict(raw)
+        item["id"] = sid_text
+        item["workflow_name"] = str(item.get("workflow_name", "")).strip()
+        task_name = str(item.get("task_name", "")).strip()
+        if not task_name:
+            task_name = f"调度任务-{sid_text[:6]}"
+        item["task_name"] = task_name[:120]
+        created_at_val = float(item.get("created_at", 0.0) or 0.0)
+        if created_at_val <= 0:
+            created_at_val = time.time()
+        item["created_at"] = created_at_val
+        workflow_data = item.get("workflow_data")
+        if isinstance(workflow_data, dict):
+            item["workflow_data"] = workflow_data
+        else:
+            item["workflow_data"] = {}
+        export_dirs = item.get("export_dirs")
+        if isinstance(export_dirs, list):
+            item["export_dirs"] = [str(x).strip() for x in export_dirs if str(x).strip()]
+        else:
+            item["export_dirs"] = _collect_schedule_export_dirs(item["workflow_data"], sid_text)
+        item["interval_sec"] = max(10, int(item.get("interval_sec", 300) or 300))
+        item["max_runs"] = max(0, int(item.get("max_runs", 0) or 0))
+        item["run_count"] = max(0, int(item.get("run_count", 0) or 0))
+        item["enabled"] = bool(item.get("enabled", True))
+        item["next_run_at"] = float(item.get("next_run_at", time.time() + item["interval_sec"]))
+        item["last_run_at"] = float(item.get("last_run_at", 0.0))
+        item["last_status"] = str(item.get("last_status", ""))
+        item["last_error"] = str(item.get("last_error", ""))
+        item["last_report_path"] = str(item.get("last_report_path", ""))
+        result[sid_text] = item
+    return result
+
+
+def _save_schedules_locked() -> None:
+    data = {sid: item for sid, item in _SCHEDULES.items()}
+    with SCHEDULES_PATH.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _ensure_scheduler_started() -> None:
+    with _SCHEDULER_LOCK:
+        if _SCHEDULER_STARTED:
+            return
+        _SCHEDULES.clear()
+        _SCHEDULES.update(_load_schedules())
+        thread = threading.Thread(target=_scheduler_loop, daemon=True, name="adbflow-scheduler")
+        thread.start()
+        _mark_scheduler_started()
+
+
+def _trigger_schedule_run_now(schedule_id: str) -> None:
+    sid = str(schedule_id).strip()
+    if not sid:
+        return
+    threading.Thread(
+        target=_run_schedule_once,
+        args=(sid,),
+        kwargs={"force": True},
+        daemon=True,
+        name=f"adbflow-schedule-run-now-{sid}",
+    ).start()
+
+
+def _clear_schedule_outputs(schedule_id: str, export_dirs: list[str]) -> None:
+    report_path = _resolve_report_path(f"schedule:{schedule_id}:batch:0")
+    try:
+        report_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    for raw_dir in export_dirs:
+        dir_text = str(raw_dir or "").strip()
+        if not dir_text:
+            continue
+        try:
+            p = Path(dir_text).expanduser()
+            if not p.is_absolute():
+                p = (Path.cwd() / p).resolve()
+            else:
+                p = p.resolve()
+            if not p.exists() or not p.is_dir():
+                continue
+            for child in p.iterdir():
+                if not child.is_file():
+                    continue
+                if child.suffix.lower() not in {".xlsx", ".xls", ".csv"}:
+                    continue
+                child.unlink(missing_ok=True)
+        except Exception:
+            continue
+
+
+def _scheduler_loop() -> None:
+    while True:
+        now = time.time()
+        due_ids: list[str] = []
+        with _SCHEDULER_LOCK:
+            for sid, item in _SCHEDULES.items():
+                if not bool(item.get("enabled", True)):
+                    continue
+                if float(item.get("next_run_at", 0)) <= now:
+                    due_ids.append(sid)
+
+        for sid in due_ids:
+            _run_schedule_once(sid)
+
+        time.sleep(1.0)
+
+
+def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
+    with _SCHEDULER_LOCK:
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            return
+        if not force and not bool(item.get("enabled", True)):
+            return
+        if _is_scheduler_running_locked():
+            item["last_status"] = "busy"
+            item["last_error"] = "已有调度任务执行中，本次触发已跳过"
+            _save_schedules_locked()
+            return
+        workflow_name = str(item.get("workflow_name", "")).strip()
+        workflow_data = item.get("workflow_data")
+        max_runs = max(0, int(item.get("max_runs", 0) or 0))
+        run_count = max(0, int(item.get("run_count", 0) or 0))
+        batch_no = run_count + 1
+        if max_runs > 0 and run_count >= max_runs:
+            item["enabled"] = False
+            item["next_run_at"] = 0.0
+            item["last_status"] = "done"
+            item["last_error"] = ""
+            _save_schedules_locked()
+            return
+        interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
+        item["next_run_at"] = time.time() + interval_sec
+        item["last_status"] = "running"
+        item["last_error"] = ""
+        if not item.get("export_dirs"):
+            item["export_dirs"] = _collect_schedule_export_dirs(
+                item.get("workflow_data") if isinstance(item.get("workflow_data"), dict) else {},
+                schedule_id,
+            )
+        _increment_schedule_running()
+        _save_schedules_locked()
+
+    started = time.time()
+    ok = False
+    err = ""
+    result: ExecutionResult | None = None
+    workflow: dict[str, object] = {}
+    if isinstance(workflow_data, dict) and workflow_data:
+        workflow = _prepare_workflow_export_paths(
+            workflow_data,
+            trigger="schedule",
+            schedule_id=schedule_id,
+            schedule_batch=batch_no,
+        )
+    else:
+        workflow_path = (WORKFLOWS_DIR / Path(workflow_name).name).resolve()
+        if workflow_path.parent != WORKFLOWS_DIR or not workflow_path.exists():
+            err = f"调度工作流不存在：{workflow_name}"
+        else:
+            try:
+                with workflow_path.open("r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                workflow = _prepare_workflow_export_paths(
+                    loaded,
+                    trigger="schedule",
+                    schedule_id=schedule_id,
+                    schedule_batch=batch_no,
+                )
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+
+    if not err:
+        try:
+            result = engine.run(workflow)
+            ok = True
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+
+    report_path = _write_execution_report(
+        workflow=workflow if ok else {},
+        result=result,
+        started_at=started,
+        trigger=f"schedule:{schedule_id}:batch:{batch_no}",
+        ok=ok,
+        error=err,
+    )
+
+    with _SCHEDULER_LOCK:
+        _decrement_schedule_running()
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            _save_schedules_locked()
+            return
+        item["last_run_at"] = time.time()
+        next_run_count = max(0, int(item.get("run_count", 0) or 0)) + 1
+        item["run_count"] = next_run_count
+        item["last_error"] = err
+        item["last_report_path"] = str(report_path)
+        max_runs = max(0, int(item.get("max_runs", 0) or 0))
+        if not ok:
+            item["last_status"] = "error"
+        elif max_runs > 0 and next_run_count < max_runs:
+            item["last_status"] = "running"
+        else:
+            item["last_status"] = "ok"
+        if max_runs > 0 and next_run_count >= max_runs:
+            item["enabled"] = False
+            item["next_run_at"] = 0.0
+            if ok:
+                item["last_status"] = "done"
+        _save_schedules_locked()

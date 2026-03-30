@@ -406,14 +406,19 @@ class PullToPcNode(BaseNode):
 
 
 _OCR_READER_CACHE: dict[tuple[tuple[str, ...], bool], easyocr.Reader] = {}
+_OCR_READER_LOCK = threading.Lock()
 
 
 def get_ocr_reader(langs: list[str], gpu: bool) -> easyocr.Reader:
     key = (tuple(langs), gpu)
     reader = _OCR_READER_CACHE.get(key)
-    if reader is None:
-        reader = easyocr.Reader(langs, gpu=gpu)
-        _OCR_READER_CACHE[key] = reader
+    if reader is not None:
+        return reader
+    with _OCR_READER_LOCK:
+        reader = _OCR_READER_CACHE.get(key)
+        if reader is None:
+            reader = easyocr.Reader(langs, gpu=gpu)
+            _OCR_READER_CACHE[key] = reader
     return reader
 
 
