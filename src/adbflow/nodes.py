@@ -525,6 +525,7 @@ class ExportExcelNode(BaseNode):
             df = pd.DataFrame(columns=columns)
 
         before_count = 0
+        effective_dedup_subset: list[str] = []
         if append_mode and output_path.exists():
             try:
                 old_df = pd.read_excel(output_path)
@@ -536,21 +537,25 @@ class ExportExcelNode(BaseNode):
                 if col not in merged.columns:
                     merged[col] = ""
 
-            dedup_subset = [k for k in dedup_keys if k in merged.columns]
-            if dedup_subset:
-                merged = merged.drop_duplicates(subset=dedup_subset, keep="first", ignore_index=True)
-            else:
-                merged = merged.drop_duplicates(keep="first", ignore_index=True)
-
             if "序号" in merged.columns:
                 merged["序号"] = np.arange(1, len(merged) + 1)
             df = merged[columns]
 
+        effective_dedup_subset = [k for k in dedup_keys if k in df.columns]
+        if effective_dedup_subset:
+            df = df.drop_duplicates(subset=effective_dedup_subset, keep="first", ignore_index=True)
+        else:
+            df = df.drop_duplicates(keep="first", ignore_index=True)
+
+        if "序号" in df.columns:
+            df["序号"] = np.arange(1, len(df) + 1)
+
         df.to_excel(output_path, index=False)
         append_text = "增量" if append_mode else "覆盖"
         dedup_text = ",".join(dedup_keys) if dedup_keys else "整行"
+        effective_dedup_text = ",".join(effective_dedup_subset) if effective_dedup_subset else "整行"
         ctx.log(
-            f"[导出表格节点] 文件={output_path}，模式={append_text}，去重键={dedup_text}，"
+            f"[导出表格节点] 文件={output_path}，模式={append_text}，去重键={dedup_text}，生效键={effective_dedup_text}，"
             f"新增={len(table_rows)}，合并前={before_count}，最终={len(df)}"
         )
         return {**payload, "excel_path": str(output_path), "row_count": len(df)}
