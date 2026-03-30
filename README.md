@@ -12,6 +12,14 @@
 8. 展示结果（PreviewExcel，表格展示前 N 条）
 9. 图片预览（PreviewImages，按文件夹预览图片）
 
+## 新特性（近期）
+
+- 执行层解耦：API 层与执行层分离，手动执行/调度执行统一走执行队列接口。
+- 节点插件化：支持内置节点 + `plugins/nodes` 目录插件 + `entry_points`（组名 `adbflow.nodes`）。
+- 状态持久化升级：调度、运行记录、报告索引、节点事件统一存储到 SQLite。
+- 可观测性增强：结构化日志（`run_id/schedule_id/node_id`）、统一错误码、`/health`、`/metrics`。
+- 运行回放：每次执行记录节点级 timeline，可在 WebUI “运行回放”页签查看耗时与失败节点并播放回放。
+
 ## 1. 环境准备
 
 - 安装 Python 3.10+
@@ -47,10 +55,19 @@ python webapp.py
 - 右上角“加载工作流”可从 `workflows` 目录选择任意 JSON 工作流
 - 右上角“加载工作流”也支持选择本地 JSON 文件导入
 - 底部面板支持“执行报告”Tab，可视化展示最近执行报告
+- 底部面板支持“运行回放”Tab，展示节点级时间线（耗时、失败点、播放回放）
 
 执行报告策略：
 - 手动执行（非调度）报告固定写入 `outputs/reports/manual_latest.json`（每次覆盖）
 - 调度执行报告按任务 ID 固定命名（每个调度任务覆盖同名报告）
+
+SQLite 持久化文件：
+- `schedules/adbflow.db`
+- 主要表：
+  - `schedules`: 调度任务快照
+  - `runs`: 执行记录
+  - `reports`: 报告索引
+  - `node_events`: 节点级事件（用于运行回放与节点耗时统计）
 
 ### 一键启动脚本
 
@@ -164,6 +181,32 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 - 可连接 `PullToPC` 节点（自动使用 `save_dir`）或 `EasyOCR` 节点（自动使用 OCR 输入图片目录）
 - 执行后图片会直接显示在“图片预览节点”内部（类似 ComfyUI 图片预览节点）
 
+## 4.1 插件化节点
+
+插件目录：
+- `plugins/nodes`
+
+示例：
+- `plugins/nodes/sample_plugin.py`
+
+插件注册方式（二选一）：
+
+1) 目录插件（推荐）
+- 在 `plugins/nodes` 放置 `*.py`
+- 插件模块可提供：
+  - `register(register_node)` 函数，内部调用 `register_node("ClassType", Factory, overwrite=True/False)`
+  - 或 `NODE_FACTORIES = {"ClassType": Factory, ...}`
+
+2) Python 包 `entry_points`
+- 组名：`adbflow.nodes`
+- 载荷支持：
+  - 可调用对象（接收 `register_node`）
+  - 或返回节点工厂字典
+
+说明：
+- 引擎初始化时会自动加载内置节点与插件节点。
+- 插件加载失败不会阻断系统启动，会记录结构化日志事件。
+
 ## 5. 工作流格式（ComfyUI 风格）
 
 节点通过 `["node_id", output_index]` 引用上游输出，示例见：
@@ -178,3 +221,15 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 - 若有多个设备，请在 `StartDevice.device_id` 指定序列号，避免误操作。
 - 滚动截图拼接在不同 App 页面上可能需要调 `max_overlap_px` 和截图节奏参数。
 - EasyOCR 首次加载模型会较慢，属于正常现象。
+
+## 7. 关键接口（新增）
+
+- `GET /health`
+  - 服务与 DB 健康状态
+- `GET /metrics?top_n=5`
+  - 运行次数、失败率、平均耗时、节点耗时 TopN
+- `GET /api/run/timeline?run_id=<run_id>`
+- `GET /api/run/timeline?report_path=<abs_report_path>`
+  - 返回节点级 timeline（`node_id/class_type/status/start_ts/end_ts/duration_ms/error`）
+- `GET /api/runtime-status`
+  - 包含执行队列状态（`queue_size/running_task_id/submitted/finished`）
