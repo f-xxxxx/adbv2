@@ -160,9 +160,9 @@ class SwipeNode(BaseNode):
         ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         device_id = self._device_id(payload)
-        direction = str(inputs.get("direction", "up")).strip().lower()
+        direction = _normalize_swipe_direction(inputs.get("direction"), default="up")
         duration_ms = self._as_int(inputs.get("duration_ms"), 350)
-        distance_px = max(1, self._as_int(inputs.get("distance_px"), 120))
+        distance_px = max(1, self._as_int(inputs.get("distance_px"), 420))
 
         x1 = inputs.get("x1")
         y1 = inputs.get("y1")
@@ -277,7 +277,7 @@ class ScreenshotNode(BaseNode):
             prefix = "shot"
         scroll = self._as_bool(inputs.get("scroll"), False)
         scroll_count = max(1, self._as_int(inputs.get("scroll_count"), 1))
-        scroll_direction = str(inputs.get("scroll_direction", "up")).strip().lower()
+        scroll_direction = _normalize_swipe_direction(inputs.get("scroll_direction"), default="up")
         swipe_duration_ms = self._as_int(inputs.get("swipe_duration_ms"), 300)
         swipe_pause_sec = self._as_float(inputs.get("swipe_pause_sec"), 0.8)
         capture_pause_sec = self._as_float(inputs.get("capture_pause_sec"), 0.2)
@@ -674,11 +674,51 @@ def _direction_swipe_coords_by_distance(
     else:
         raise NodeExecutionError("滑动方向参数无效，请选择 up 或 down")
 
-    sy1 = max(0, min(h - 1, sy1))
-    sy2 = max(0, min(h - 1, sy2))
+    # Keep both points away from hard edges to avoid y1==y2 invalid swipe.
+    if h >= 3:
+        sy1 = max(1, min(h - 2, sy1))
+        sy2 = max(1, min(h - 2, sy2))
+    else:
+        sy1 = max(0, min(h - 1, sy1))
+        sy2 = max(0, min(h - 1, sy2))
+
+    # If user-provided start point is too close to edge, clamp may shrink movement too much.
+    # In that case fallback to a safe default band to keep swipe observable.
+    actual_travel = abs(sy2 - sy1)
+    min_travel = max(80, int(dist * 0.35))
+    if h > 4:
+        min_travel = min(min_travel, h - 3)
+    if actual_travel < min_travel:
+        if direction == "up":
+            safe_start = int(h * 0.78)
+            safe_end = safe_start - dist
+        else:
+            safe_start = int(h * 0.22)
+            safe_end = safe_start + dist
+        sy1 = max(1, min(h - 2, safe_start))
+        sy2 = max(1, min(h - 2, safe_end))
+        if abs(sy2 - sy1) < min_travel:
+            # Final fallback uses a fixed large band.
+            if direction == "up":
+                sy1 = max(1, min(h - 2, int(h * 0.82)))
+                sy2 = max(1, min(h - 2, int(h * 0.26)))
+            else:
+                sy1 = max(1, min(h - 2, int(h * 0.18)))
+                sy2 = max(1, min(h - 2, int(h * 0.74)))
+
     if sy1 == sy2:
-        sy2 = max(0, sy1 - 1) if direction == "up" else min(h - 1, sy1 + 1)
+        sy2 = sy1 - 1 if direction == "up" else sy1 + 1
+        sy2 = max(0, min(h - 1, sy2))
     return sx, sy1, sx, sy2
+
+
+def _normalize_swipe_direction(value: Any, default: str = "up") -> str:
+    text = str(value or "").strip().lower()
+    if text in {"up", "u", "上滑"}:
+        return "up"
+    if text in {"down", "d", "下滑"}:
+        return "down"
+    return default
 
 
 def stitch_scroll_images(local_paths: list[str], output_path: str, max_overlap_px: int = 300) -> None:

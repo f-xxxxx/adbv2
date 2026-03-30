@@ -177,7 +177,7 @@ const graph = new LGraph();
 
     function SwipeNode() {
       this.title = "滑动节点";
-      this.properties = { direction: "up", duration_ms: 350, distance_px: 120, x: null, y: null };
+      this.properties = { direction: "up", duration_ms: 350, distance_px: 420, x: null, y: null };
       makeIO(this, true);
       this.addWidget(
         "combo",
@@ -754,7 +754,7 @@ const graph = new LGraph();
       } else if (ct === "Swipe") {
         if (widgets[0]) widgets[0].value = directionValueToLabel(node.properties.direction || "up");
         if (widgets[1]) widgets[1].value = Number(node.properties.duration_ms ?? 350);
-        if (widgets[2]) widgets[2].value = Number(node.properties.distance_px ?? 120);
+        if (widgets[2]) widgets[2].value = Number(node.properties.distance_px ?? 420);
         if (widgets[3]) widgets[3].value = node.properties.x == null ? "" : String(node.properties.x);
         if (widgets[4]) widgets[4].value = node.properties.y == null ? "" : String(node.properties.y);
       } else if (ct === "Wait") {
