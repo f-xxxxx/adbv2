@@ -16,7 +16,7 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 
 from src.adbflow.adb_client import ADBClient, ADBError
 from src.adbflow.engine import ExecutionResult, WorkflowEngine, WorkflowFormatError
-from src.adbflow.nodes import NodeExecutionError
+from src.adbflow.nodes import NodeExecutionError, WorkflowCancelledError
 
 app = Flask(__name__, template_folder="web", static_folder="web")
 adb = ADBClient()
@@ -36,6 +36,39 @@ SCHEDULES_DIR.mkdir(parents=True, exist_ok=True)
 _SCHEDULER_LOCK = threading.Lock()
 _SCHEDULES: dict[str, dict[str, object]] = {}
 _SCHEDULER_STARTED = False
+_SCHEDULE_RUNNING_COUNT = 0
+_MANUAL_RUN_LOCK = threading.Lock()
+_MANUAL_RUN_STATE: dict[str, object] = {
+    "running": False,
+    "cancel_event": threading.Event(),
+}
+
+
+def _is_scheduler_running() -> bool:
+    with _SCHEDULER_LOCK:
+        return _SCHEDULE_RUNNING_COUNT > 0
+
+
+def _is_scheduler_running_locked() -> bool:
+    return _SCHEDULE_RUNNING_COUNT > 0
+
+
+def _try_begin_manual_run() -> tuple[bool, str, threading.Event | None]:
+    with _MANUAL_RUN_LOCK:
+        if bool(_MANUAL_RUN_STATE.get("running")):
+            return False, "已有手动执行任务正在运行，请先停止或等待完成。", None
+        if _is_scheduler_running():
+            return False, "调度任务正在执行中，请稍后再手动运行。", None
+        cancel_event = threading.Event()
+        _MANUAL_RUN_STATE["running"] = True
+        _MANUAL_RUN_STATE["cancel_event"] = cancel_event
+        return True, "", cancel_event
+
+
+def _end_manual_run() -> None:
+    with _MANUAL_RUN_LOCK:
+        _MANUAL_RUN_STATE["running"] = False
+        _MANUAL_RUN_STATE["cancel_event"] = threading.Event()
 
 
 @app.get("/")
@@ -51,17 +84,46 @@ def list_devices():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.get("/api/runtime-status")
+def runtime_status():
+    with _MANUAL_RUN_LOCK:
+        manual_running = bool(_MANUAL_RUN_STATE.get("running"))
+    return jsonify(
+        {
+            "ok": True,
+            "manual_running": manual_running,
+            "scheduler_running": _is_scheduler_running(),
+        }
+    )
+
+
+@app.post("/api/run-cancel")
+def cancel_workflow_run():
+    with _MANUAL_RUN_LOCK:
+        running = bool(_MANUAL_RUN_STATE.get("running"))
+        cancel_event = _MANUAL_RUN_STATE.get("cancel_event")
+        if not running or not isinstance(cancel_event, threading.Event):
+            return jsonify({"ok": False, "error": "当前没有可取消的执行任务"}), 400
+        cancel_event.set()
+    return jsonify({"ok": True, "message": "已发送停止信号"})
+
+
 @app.post("/api/run")
 def run_workflow():
+    ok_to_run, deny_msg, cancel_event = _try_begin_manual_run()
+    if not ok_to_run:
+        return jsonify({"ok": False, "error": deny_msg}), 409
+
     payload = request.get_json(silent=True) or {}
     workflow = payload.get("workflow")
     if not workflow:
+        _end_manual_run()
         return jsonify({"ok": False, "error": "请求体中缺少工作流配置"}), 400
     prepared_workflow = _prepare_workflow_export_paths(workflow, trigger="manual")
 
     started = time.time()
     try:
-        result = engine.run(prepared_workflow)
+        result = engine.run(prepared_workflow, cancel_event=cancel_event)
         report_path = _write_execution_report(
             workflow=prepared_workflow,
             result=result,
@@ -70,6 +132,16 @@ def run_workflow():
             ok=True,
             error="",
         )
+    except WorkflowCancelledError as exc:
+        _write_execution_report(
+            workflow=prepared_workflow,
+            result=None,
+            started_at=started,
+            trigger="manual",
+            ok=False,
+            error=str(exc),
+        )
+        return jsonify({"ok": False, "error": str(exc), "cancelled": True}), 409
     except (WorkflowFormatError, NodeExecutionError, ADBError, ValueError) as exc:
         _write_execution_report(
             workflow=prepared_workflow,
@@ -90,15 +162,22 @@ def run_workflow():
             error=f"未预期异常：{exc}",
         )
         return jsonify({"ok": False, "error": f"未预期异常：{exc}"}), 500
+    finally:
+        _end_manual_run()
 
     return jsonify({"ok": True, "logs": result.logs, "outputs": result.outputs, "report_path": str(report_path)})
 
 
 @app.post("/api/run-stream")
 def run_workflow_stream():
+    ok_to_run, deny_msg, cancel_event = _try_begin_manual_run()
+    if not ok_to_run:
+        return jsonify({"ok": False, "error": deny_msg}), 409
+
     payload = request.get_json(silent=True) or {}
     workflow = payload.get("workflow")
     if not workflow:
+        _end_manual_run()
         return jsonify({"ok": False, "error": "请求体中缺少工作流配置"}), 400
     prepared_workflow = _prepare_workflow_export_paths(workflow, trigger="manual")
 
@@ -116,7 +195,12 @@ def run_workflow_stream():
 
     def worker() -> None:
         try:
-            result = engine.run(prepared_workflow, on_log=on_log, on_event=on_event)
+            result = engine.run(
+                prepared_workflow,
+                on_log=on_log,
+                on_event=on_event,
+                cancel_event=cancel_event,
+            )
             result_holder["result"] = result
             result_holder["report_path"] = str(
                 _write_execution_report(
@@ -127,6 +211,16 @@ def run_workflow_stream():
                     ok=True,
                     error="",
                 )
+            )
+        except WorkflowCancelledError as exc:
+            error_holder["error"] = str(exc)
+            _write_execution_report(
+                workflow=prepared_workflow,
+                result=None,
+                started_at=started,
+                trigger="manual",
+                ok=False,
+                error=str(exc),
             )
         except (WorkflowFormatError, NodeExecutionError, ADBError, ValueError) as exc:
             error_holder["error"] = str(exc)
@@ -149,6 +243,7 @@ def run_workflow_stream():
                 error=f"未预期异常：{exc}",
             )
         finally:
+            _end_manual_run()
             event_queue.put(None)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -232,7 +327,11 @@ def load_workflow():
 def list_schedules():
     _ensure_scheduler_started()
     with _SCHEDULER_LOCK:
-        items = list(_SCHEDULES.values())
+        items = sorted(
+            _SCHEDULES.values(),
+            key=lambda x: float(x.get("created_at", 0.0) or 0.0),
+            reverse=True,
+        )
     return jsonify({"ok": True, "items": items})
 
 
@@ -244,6 +343,8 @@ def create_schedule():
     workflow_data = payload.get("workflow")
     interval_sec = int(payload.get("interval_sec", 300) or 300)
     max_runs = max(0, int(payload.get("max_runs", 0) or 0))
+    task_name = str(payload.get("task_name", "")).strip()
+    run_now = payload.get("run_now") is True
     if interval_sec < 10:
         interval_sec = 10
 
@@ -267,9 +368,13 @@ def create_schedule():
 
     schedule_id = uuid.uuid4().hex[:10]
     now = time.time()
+    if not task_name:
+        task_name = f"调度任务-{schedule_id[:6]}"
     export_dirs = _collect_schedule_export_dirs(workflow_snapshot, schedule_id)
     item: dict[str, object] = {
         "id": schedule_id,
+        "task_name": task_name[:120],
+        "created_at": now,
         "workflow_name": source_name,
         "workflow_data": workflow_snapshot,
         "export_dirs": export_dirs,
@@ -284,8 +389,15 @@ def create_schedule():
         "last_report_path": "",
     }
     with _SCHEDULER_LOCK:
+        if run_now and _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
         _SCHEDULES[schedule_id] = item
+        if run_now:
+            item["last_status"] = "running"
+            item["next_run_at"] = time.time() + interval_sec
         _save_schedules_locked()
+    if run_now:
+        _trigger_schedule_run_now(schedule_id)
     return jsonify({"ok": True, "item": item})
 
 
@@ -295,17 +407,223 @@ def toggle_schedule():
     payload = request.get_json(silent=True) or {}
     schedule_id = str(payload.get("id", "")).strip()
     enabled = bool(payload.get("enabled", True))
+    run_now = payload.get("run_now") is True
     if not schedule_id:
         return jsonify({"ok": False, "error": "缺少 id"}), 400
     with _SCHEDULER_LOCK:
         item = _SCHEDULES.get(schedule_id)
         if not item:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if enabled and run_now and _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
         item["enabled"] = enabled
         if enabled:
-            item["next_run_at"] = time.time() + max(10, int(item.get("interval_sec", 300)))
+            interval_sec = max(10, int(item.get("interval_sec", 300)))
+            item["next_run_at"] = time.time() + interval_sec
+            if run_now:
+                item["last_status"] = "running"
+                item["last_error"] = ""
         _save_schedules_locked()
-        return jsonify({"ok": True, "item": item})
+        result_item = dict(item)
+    if enabled and run_now:
+        _trigger_schedule_run_now(schedule_id)
+    return jsonify({"ok": True, "item": result_item})
+
+
+@app.post("/api/schedules/run-now")
+def run_schedule_now():
+    _ensure_scheduler_started()
+    payload = request.get_json(silent=True) or {}
+    schedule_id = str(payload.get("id", "")).strip()
+    if not schedule_id:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+
+    with _SCHEDULER_LOCK:
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+
+        export_dirs_raw = item.get("export_dirs")
+        export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
+        item["run_count"] = 0
+        item["last_run_at"] = 0.0
+        item["last_status"] = "running"
+        item["last_error"] = ""
+        item["last_report_path"] = ""
+        _save_schedules_locked()
+        result_item = dict(item)
+
+    _clear_schedule_outputs(schedule_id, export_dirs)
+    _trigger_schedule_run_now(schedule_id)
+    return jsonify({"ok": True, "item": result_item})
+
+
+@app.post("/api/schedules/run-now-stream")
+def run_schedule_now_stream():
+    global _SCHEDULE_RUNNING_COUNT
+    _ensure_scheduler_started()
+    payload = request.get_json(silent=True) or {}
+    schedule_id = str(payload.get("id", "")).strip()
+    if not schedule_id:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+
+    with _MANUAL_RUN_LOCK:
+        if bool(_MANUAL_RUN_STATE.get("running")):
+            return jsonify({"ok": False, "error": "已有手动执行任务正在运行，请稍后再试"}), 409
+
+    with _SCHEDULER_LOCK:
+        item = _SCHEDULES.get(schedule_id)
+        if not item:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if _is_scheduler_running_locked():
+            return jsonify({"ok": False, "error": "已有调度任务执行中，请稍后再试"}), 409
+
+        export_dirs_raw = item.get("export_dirs")
+        export_dirs = [str(x).strip() for x in export_dirs_raw] if isinstance(export_dirs_raw, list) else []
+        workflow_name = str(item.get("workflow_name", "")).strip()
+        workflow_data = deepcopy(item.get("workflow_data")) if isinstance(item.get("workflow_data"), dict) else {}
+        max_runs = max(0, int(item.get("max_runs", 0) or 0))
+        interval_sec = max(10, int(item.get("interval_sec", 300) or 300))
+
+        item["run_count"] = 0
+        item["last_run_at"] = 0.0
+        item["last_status"] = "running"
+        item["last_error"] = ""
+        item["last_report_path"] = ""
+        item["next_run_at"] = time.time() + interval_sec
+        _SCHEDULE_RUNNING_COUNT += 1
+        _save_schedules_locked()
+
+    _clear_schedule_outputs(schedule_id, export_dirs)
+
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+    result_holder: dict[str, object] = {}
+    error_holder: dict[str, str] = {}
+    started = time.time()
+
+    def on_log(line: str) -> None:
+        event_queue.put({"type": "log", "line": line})
+
+    def on_event(evt: dict[str, object]) -> None:
+        event_queue.put({"type": "event", **evt})
+
+    def worker() -> None:
+        global _SCHEDULE_RUNNING_COUNT
+        ok = False
+        err = ""
+        result: ExecutionResult | None = None
+        prepared_workflow: dict[str, object] = {}
+
+        if isinstance(workflow_data, dict) and workflow_data:
+            try:
+                prepared_workflow = _prepare_workflow_export_paths(
+                    workflow_data,
+                    trigger="schedule",
+                    schedule_id=schedule_id,
+                    schedule_batch=1,
+                )
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+        else:
+            workflow_path = (WORKFLOWS_DIR / Path(workflow_name).name).resolve()
+            if workflow_path.parent != WORKFLOWS_DIR or not workflow_path.exists():
+                err = f"调度工作流不存在：{workflow_name}"
+            else:
+                try:
+                    with workflow_path.open("r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    prepared_workflow = _prepare_workflow_export_paths(
+                        loaded,
+                        trigger="schedule",
+                        schedule_id=schedule_id,
+                        schedule_batch=1,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    err = str(exc)
+
+        if not err:
+            try:
+                result = engine.run(
+                    prepared_workflow,
+                    on_log=on_log,
+                    on_event=on_event,
+                )
+                ok = True
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+
+        report_path = _write_execution_report(
+            workflow=prepared_workflow if ok else {},
+            result=result,
+            started_at=started,
+            trigger=f"schedule:{schedule_id}:batch:1",
+            ok=ok,
+            error=err,
+        )
+
+        with _SCHEDULER_LOCK:
+            _SCHEDULE_RUNNING_COUNT = max(0, _SCHEDULE_RUNNING_COUNT - 1)
+            saved_item = _SCHEDULES.get(schedule_id)
+            if saved_item:
+                saved_item["last_run_at"] = time.time()
+                next_run_count = 1
+                saved_item["run_count"] = next_run_count
+                saved_item["last_error"] = err
+                saved_item["last_report_path"] = str(report_path)
+                if not ok:
+                    saved_item["last_status"] = "error"
+                elif max_runs > 0 and next_run_count < max_runs:
+                    saved_item["last_status"] = "running"
+                else:
+                    saved_item["last_status"] = "ok"
+                if max_runs > 0 and next_run_count >= max_runs:
+                    saved_item["enabled"] = False
+                    saved_item["next_run_at"] = 0.0
+                    if ok:
+                        saved_item["last_status"] = "done"
+                _save_schedules_locked()
+            else:
+                _save_schedules_locked()
+
+        if ok and result is not None:
+            result_holder["result"] = result
+            result_holder["report_path"] = str(report_path)
+        else:
+            error_holder["error"] = err or "执行失败"
+        event_queue.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    @stream_with_context
+    def generate():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield json.dumps(item, ensure_ascii=False) + "\n"
+
+        if "error" in error_holder:
+            yield json.dumps({"type": "error", "error": error_holder["error"]}, ensure_ascii=False) + "\n"
+            return
+
+        result = result_holder.get("result")
+        if isinstance(result, ExecutionResult):
+            yield json.dumps(
+                {
+                    "type": "result",
+                    "outputs": result.outputs,
+                    "logs": result.logs,
+                    "report_path": result_holder.get("report_path", ""),
+                },
+                ensure_ascii=False,
+            ) + "\n"
+            return
+
+        yield json.dumps({"type": "error", "error": "执行流未返回结果"}, ensure_ascii=False) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson")
 
 
 @app.delete("/api/schedules/<schedule_id>")
@@ -406,8 +724,7 @@ def _write_execution_report(
     error: str,
 ) -> Path:
     ended_at = time.time()
-    ts = datetime.fromtimestamp(ended_at).strftime("%Y%m%d_%H%M%S")
-    report_path = REPORTS_DIR / f"run_{ts}_{uuid.uuid4().hex[:6]}.json"
+    report_path = _resolve_report_path(trigger)
     payload = {
         "ok": ok,
         "trigger": trigger,
@@ -424,6 +741,22 @@ def _write_execution_report(
     with report_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return report_path
+
+
+def _resolve_report_path(trigger: str) -> Path:
+    trigger_text = str(trigger or "").strip().lower()
+    if trigger_text == "manual":
+        return (REPORTS_DIR / "manual_latest.json").resolve()
+    if trigger_text.startswith("schedule:"):
+        # format: schedule:{schedule_id}:batch:{n}
+        parts = trigger_text.split(":")
+        schedule_id = parts[1] if len(parts) >= 2 else "schedule"
+        safe_schedule_id = "".join(ch for ch in str(schedule_id) if ch.isalnum() or ch in {"-", "_"})
+        if not safe_schedule_id:
+            safe_schedule_id = "schedule"
+        return (REPORTS_DIR / f"schedule_{safe_schedule_id}.json").resolve()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return (REPORTS_DIR / f"run_{ts}_{uuid.uuid4().hex[:6]}.json").resolve()
 
 
 def _prepare_workflow_export_paths(
@@ -565,6 +898,14 @@ def _load_schedules() -> dict[str, dict[str, object]]:
         item = dict(raw)
         item["id"] = sid_text
         item["workflow_name"] = str(item.get("workflow_name", "")).strip()
+        task_name = str(item.get("task_name", "")).strip()
+        if not task_name:
+            task_name = f"调度任务-{sid_text[:6]}"
+        item["task_name"] = task_name[:120]
+        created_at_val = float(item.get("created_at", 0.0) or 0.0)
+        if created_at_val <= 0:
+            created_at_val = time.time()
+        item["created_at"] = created_at_val
         workflow_data = item.get("workflow_data")
         if isinstance(workflow_data, dict):
             item["workflow_data"] = workflow_data
@@ -606,6 +947,48 @@ def _ensure_scheduler_started() -> None:
         _SCHEDULER_STARTED = True
 
 
+def _trigger_schedule_run_now(schedule_id: str) -> None:
+    sid = str(schedule_id).strip()
+    if not sid:
+        return
+    threading.Thread(
+        target=_run_schedule_once,
+        args=(sid,),
+        kwargs={"force": True},
+        daemon=True,
+        name=f"adbflow-schedule-run-now-{sid}",
+    ).start()
+
+
+def _clear_schedule_outputs(schedule_id: str, export_dirs: list[str]) -> None:
+    report_path = _resolve_report_path(f"schedule:{schedule_id}:batch:0")
+    try:
+        report_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    for raw_dir in export_dirs:
+        dir_text = str(raw_dir or "").strip()
+        if not dir_text:
+            continue
+        try:
+            p = Path(dir_text).expanduser()
+            if not p.is_absolute():
+                p = (Path.cwd() / p).resolve()
+            else:
+                p = p.resolve()
+            if not p.exists() or not p.is_dir():
+                continue
+            for child in p.iterdir():
+                if not child.is_file():
+                    continue
+                if child.suffix.lower() not in {".xlsx", ".xls", ".csv"}:
+                    continue
+                child.unlink(missing_ok=True)
+        except Exception:
+            continue
+
+
 def _scheduler_loop() -> None:
     while True:
         now = time.time()
@@ -623,10 +1006,18 @@ def _scheduler_loop() -> None:
         time.sleep(1.0)
 
 
-def _run_schedule_once(schedule_id: str) -> None:
+def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
+    global _SCHEDULE_RUNNING_COUNT
     with _SCHEDULER_LOCK:
         item = _SCHEDULES.get(schedule_id)
         if not item:
+            return
+        if not force and not bool(item.get("enabled", True)):
+            return
+        if _is_scheduler_running_locked():
+            item["last_status"] = "busy"
+            item["last_error"] = "已有调度任务执行中，本次触发已跳过"
+            _save_schedules_locked()
             return
         workflow_name = str(item.get("workflow_name", "")).strip()
         workflow_data = item.get("workflow_data")
@@ -649,6 +1040,7 @@ def _run_schedule_once(schedule_id: str) -> None:
                 item.get("workflow_data") if isinstance(item.get("workflow_data"), dict) else {},
                 schedule_id,
             )
+        _SCHEDULE_RUNNING_COUNT += 1
         _save_schedules_locked()
 
     started = time.time()
@@ -697,16 +1089,24 @@ def _run_schedule_once(schedule_id: str) -> None:
     )
 
     with _SCHEDULER_LOCK:
+        _SCHEDULE_RUNNING_COUNT = max(0, _SCHEDULE_RUNNING_COUNT - 1)
         item = _SCHEDULES.get(schedule_id)
         if not item:
+            _save_schedules_locked()
             return
         item["last_run_at"] = time.time()
-        item["run_count"] = max(0, int(item.get("run_count", 0) or 0)) + 1
-        item["last_status"] = "ok" if ok else "error"
+        next_run_count = max(0, int(item.get("run_count", 0) or 0)) + 1
+        item["run_count"] = next_run_count
         item["last_error"] = err
         item["last_report_path"] = str(report_path)
         max_runs = max(0, int(item.get("max_runs", 0) or 0))
-        if max_runs > 0 and int(item.get("run_count", 0) or 0) >= max_runs:
+        if not ok:
+            item["last_status"] = "error"
+        elif max_runs > 0 and next_run_count < max_runs:
+            item["last_status"] = "running"
+        else:
+            item["last_status"] = "ok"
+        if max_runs > 0 and next_run_count >= max_runs:
             item["enabled"] = False
             item["next_run_at"] = 0.0
             if ok:

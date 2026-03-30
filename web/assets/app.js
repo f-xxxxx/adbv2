@@ -20,6 +20,16 @@ const graph = new LGraph();
     let tapPickerReady = false;
     let swipePickerReady = false;
     let workflowRunning = false;
+    let cancelRequestedByUser = false;
+    let schedulerRunning = false;
+    let runtimeStatusTimer = null;
+    let activeScheduleRunId = "";
+    const executionProgress = {
+      active: false,
+      total: 0,
+      doneSet: new Set(),
+      currentNodeId: null
+    };
     const scheduleListState = {
       items: [],
       page: 1,
@@ -27,6 +37,9 @@ const graph = new LGraph();
       autoRefreshTimer: null
     };
     let currentScheduleReportPath = "";
+    let lastAutoLoadedScheduleReportPath = "";
+    let lastAutoLoadedScheduleOutcomeKey = "";
+    let currentReportPath = "";
     const regionHelper = {
       image: null,
       imageName: "",
@@ -237,16 +250,32 @@ const graph = new LGraph();
       this.title = "回传节点";
       this.properties = {
         save_dir: "outputs/screenshots",
+        clear_save_dir: false,
         stitch_scroll: true,
         max_overlap_px: 300,
         cleanup_remote: true
       };
       makeIO(this, true);
       this.addWidget("text", "电脑保存目录", this.properties.save_dir, (v) => this.properties.save_dir = v);
+      this.addWidget("toggle", "执行前清空目录(高风险)", this.properties.clear_save_dir, (v) => {
+        const nextVal = !!v;
+        if (!nextVal) {
+          this.properties.clear_save_dir = false;
+          return;
+        }
+        const yes = window.confirm("开启后将删除保存目录中的历史文件，是否确认开启？");
+        this.properties.clear_save_dir = !!yes;
+        if (!yes) {
+          setStatus("已取消开启“清空目录”");
+        } else {
+          setStatus("风险提示：已开启执行前清空目录");
+        }
+        if (this.widgets && this.widgets[1]) this.widgets[1].value = this.properties.clear_save_dir;
+      });
       this.addWidget("toggle", "拼接长图", this.properties.stitch_scroll, (v) => this.properties.stitch_scroll = !!v);
       this.addWidget("number", "最大重叠像素", this.properties.max_overlap_px, (v) => this.properties.max_overlap_px = Number(v));
       this.addWidget("toggle", "清理手机临时图(建议开启)", this.properties.cleanup_remote, (v) => this.properties.cleanup_remote = !!v);
-      this.size = [300, 150];
+      this.size = [320, 180];
     }
 
     function OCRNode() {
@@ -687,9 +716,10 @@ const graph = new LGraph();
         if (widgets[1]) widgets[1].value = Number(node.properties.loop_start_wait_sec ?? 0.6);
       } else if (ct === "PullToPC") {
         if (widgets[0]) widgets[0].value = node.properties.save_dir || "outputs/screenshots";
-        if (widgets[1]) widgets[1].value = !!node.properties.stitch_scroll;
-        if (widgets[2]) widgets[2].value = Number(node.properties.max_overlap_px ?? 300);
-        if (widgets[3]) widgets[3].value = node.properties.cleanup_remote !== false;
+        if (widgets[1]) widgets[1].value = !!node.properties.clear_save_dir;
+        if (widgets[2]) widgets[2].value = !!node.properties.stitch_scroll;
+        if (widgets[3]) widgets[3].value = Number(node.properties.max_overlap_px ?? 300);
+        if (widgets[4]) widgets[4].value = node.properties.cleanup_remote !== false;
       } else if (ct === "EasyOCR") {
         if (widgets[0]) widgets[0].value = node.properties.languages || "ch_sim,en";
         if (widgets[1]) widgets[1].value = !!node.properties.gpu;
@@ -809,14 +839,89 @@ const graph = new LGraph();
       }
     }
 
-    function setRunButtonBusy(isBusy) {
-      workflowRunning = !!isBusy;
+    function updateTopbarActionsState() {
+      const bar = document.querySelector(".bar-actions");
+      if (!bar) return;
+      const locked = workflowRunning || schedulerRunning;
+      const buttons = bar.querySelectorAll("button");
+      buttons.forEach((btn) => {
+        btn.disabled = locked;
+      });
+    }
+
+    function updateRunButtonState() {
       const btn = document.getElementById("run-workflow-btn");
       if (!btn) return;
-      btn.disabled = workflowRunning;
-      btn.innerHTML = workflowRunning
-        ? '<span class="btn-icon">&#9203;</span>执行中...'
-        : '<span class="btn-icon">&#9654;</span>运行工作流';
+      const hasProgress = executionProgress.active && executionProgress.total > 0;
+      const doneCount = executionProgress.doneSet.size;
+      const progressText = hasProgress
+        ? `执行中 ${Math.min(doneCount, executionProgress.total)}/${executionProgress.total}`
+        : "执行中...";
+      if (workflowRunning) {
+        btn.classList.remove("warn");
+        btn.classList.add("primary");
+        btn.innerHTML = `<span class="btn-icon">&#9203;</span>${progressText}`;
+        updateTopbarActionsState();
+        return;
+      }
+      btn.classList.remove("warn");
+      btn.classList.add("primary");
+      if (schedulerRunning) {
+        btn.innerHTML = `<span class="btn-icon">&#9203;</span>${progressText}`;
+      } else {
+        btn.innerHTML = '<span class="btn-icon">&#9654;</span>运行工作流';
+      }
+      updateTopbarActionsState();
+    }
+
+    function startExecutionProgress(workflow) {
+      const total = workflow && typeof workflow === "object" ? Object.keys(workflow).length : 0;
+      executionProgress.active = true;
+      executionProgress.total = Number.isFinite(total) ? Math.max(0, total) : 0;
+      executionProgress.doneSet = new Set();
+      executionProgress.currentNodeId = null;
+      updateRunButtonState();
+    }
+
+    function stopExecutionProgress() {
+      executionProgress.active = false;
+      executionProgress.total = 0;
+      executionProgress.doneSet = new Set();
+      executionProgress.currentNodeId = null;
+      updateRunButtonState();
+    }
+
+    async function refreshRuntimeStatus(silent = true) {
+      try {
+        const res = await fetch("/api/runtime-status");
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "状态读取失败");
+        schedulerRunning = !!data.scheduler_running;
+        updateRunButtonState();
+      } catch (err) {
+        if (!silent) {
+          log("读取运行状态失败: " + err.message);
+        }
+      }
+    }
+
+    async function cancelRunningWorkflow() {
+      try {
+        setStatus("正在发送停止信号...");
+        const res = await fetch("/api/run-cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "停止失败");
+        cancelRequestedByUser = true;
+        log("已发送停止信号，等待当前节点收尾...");
+        setStatus("已发送停止信号");
+      } catch (err) {
+        log("停止执行失败: " + err.message);
+        setStatus("停止执行失败");
+      }
     }
 
     function resetNodeProgressHighlight() {
@@ -879,14 +984,24 @@ const graph = new LGraph();
       const nodeText = `节点 ${nodeId}`;
 
       if (eventName === "node_start") {
+        executionProgress.currentNodeId = Number.isFinite(Number(nodeId)) ? Number(nodeId) : nodeId;
         setNodeProgressState(nodeId, "running");
         setStatus(`执行中：${nodeText}`);
+        updateRunButtonState();
+        if (activeScheduleRunId) renderScheduleList();
       } else if (eventName === "node_done") {
+        if (Number.isFinite(Number(nodeId))) executionProgress.doneSet.add(Number(nodeId));
+        else executionProgress.doneSet.add(String(nodeId));
         setNodeProgressState(nodeId, "done");
         setStatus(`已完成：${nodeText}`);
+        updateRunButtonState();
+        if (activeScheduleRunId) renderScheduleList();
       } else if (eventName === "node_error") {
+        executionProgress.currentNodeId = Number.isFinite(Number(nodeId)) ? Number(nodeId) : nodeId;
         setNodeProgressState(nodeId, "error");
         setStatus(`执行失败：${nodeText}`);
+        updateRunButtonState();
+        if (activeScheduleRunId) renderScheduleList();
       }
     }
 
@@ -900,8 +1015,10 @@ const graph = new LGraph();
       if (!res.ok) {
         try {
           const data = await res.json();
-          throw new Error(data.error || "执行失败");
-        } catch (_err) {
+          const msg = data && data.error ? String(data.error) : "";
+          if (msg) throw new Error(msg);
+        } catch (err) {
+          if (err && err.message) throw err;
           throw new Error(`执行失败（HTTP ${res.status}）`);
         }
       }
@@ -977,7 +1094,11 @@ const graph = new LGraph();
 
     async function runWorkflow() {
       if (workflowRunning) {
-        setStatus("工作流正在执行，请稍候");
+        await cancelRunningWorkflow();
+        return;
+      }
+      if (schedulerRunning) {
+        setStatus("调度任务正在执行中，请稍后再手动运行");
         return;
       }
       const runStartedAt = performance.now();
@@ -989,10 +1110,13 @@ const graph = new LGraph();
       }
       log("开始执行工作流...");
       setStatus("工作流执行中...");
-      setRunButtonBusy(true);
+      cancelRequestedByUser = false;
+      workflowRunning = true;
+      updateRunButtonState();
       clearPreviewTable("结果预览：执行中...");
       clearPreviewImagesOnNodes();
       resetNodeProgressHighlight();
+      startExecutionProgress(workflow);
       try {
         const data = await runWorkflowStream(workflow);
         const elapsedSec = ((performance.now() - runStartedAt) / 1000).toFixed(2);
@@ -1000,16 +1124,37 @@ const graph = new LGraph();
         log(`执行耗时: ${elapsedSec} 秒`);
         if (data.report_path) {
           log(`执行报告: ${data.report_path}`);
+          currentReportPath = String(data.report_path || "");
+          await openReportInBottomTab(currentReportPath, "手动执行报告");
         }
         applyPreviewImagesToNodes(data.outputs || {});
         renderPreviewTable(data.outputs || {});
         setStatus("执行完成");
       } catch (err) {
-        log("执行失败: " + err.message);
-        clearPreviewTable("结果预览：执行失败");
-        setStatus("执行失败");
+        const msg = err && err.message ? String(err.message) : String(err);
+        if (msg.includes("执行已取消")) {
+          if (cancelRequestedByUser) {
+            log("执行已停止：用户手动停止");
+            clearPreviewTable("结果预览：用户手动停止");
+            setStatus("已手动停止");
+          } else {
+            log("执行已取消");
+            clearPreviewTable("结果预览：执行已取消");
+            setStatus("执行已取消");
+          }
+        } else {
+          log("执行失败: " + msg);
+          clearPreviewTable("结果预览：执行失败");
+          setStatus("执行失败");
+        }
+        currentReportPath = "outputs/reports/manual_latest.json";
+        await openReportInBottomTab(currentReportPath, "手动执行报告");
       } finally {
-        setRunButtonBusy(false);
+        cancelRequestedByUser = false;
+        workflowRunning = false;
+        stopExecutionProgress();
+        await refreshRuntimeStatus(true);
+        updateRunButtonState();
       }
     }
 
@@ -1034,10 +1179,14 @@ const graph = new LGraph();
         setStatus("画布为空，无法创建调度");
         return;
       }
+      const nameInput = document.getElementById("schedule-name-input");
       const intervalInput = document.getElementById("schedule-interval-input");
       const maxRunsInput = document.getElementById("schedule-max-runs-input");
+      const runNowInput = document.getElementById("schedule-run-now-input");
+      if (nameInput) nameInput.value = "";
       if (intervalInput) intervalInput.value = "300";
       if (maxRunsInput) maxRunsInput.value = "0";
+      if (runNowInput) runNowInput.checked = false;
       const modal = document.getElementById("schedule-modal");
       if (modal) modal.classList.remove("hidden");
       setStatus("请设置调度间隔和执行批次");
@@ -1058,10 +1207,18 @@ const graph = new LGraph();
         setStatus("画布为空，无法创建调度");
         return;
       }
+      const nameInput = document.getElementById("schedule-name-input");
       const intervalInput = document.getElementById("schedule-interval-input");
       const maxRunsInput = document.getElementById("schedule-max-runs-input");
+      const runNowInput = document.getElementById("schedule-run-now-input");
+      const taskName = String(nameInput ? nameInput.value : "").trim();
       const intervalSec = Number(intervalInput ? intervalInput.value : "");
       const maxRuns = Number(maxRunsInput ? maxRunsInput.value : "");
+      const runNow = !!(runNowInput && runNowInput.checked);
+      if (!taskName) {
+        setStatus("任务名称不能为空");
+        return;
+      }
       if (!Number.isFinite(intervalSec) || intervalSec < 10) {
         setStatus("间隔秒数无效，必须 >= 10");
         return;
@@ -1075,17 +1232,27 @@ const graph = new LGraph();
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            task_name: taskName,
             workflow,
             interval_sec: Math.trunc(intervalSec),
-            max_runs: Math.trunc(maxRuns)
+            max_runs: Math.trunc(maxRuns),
+            run_now: runNow
           })
         });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "创建调度失败");
         const planText = Number(data.item.max_runs || 0) > 0 ? `${data.item.max_runs} 批` : "无限次";
-        log(`调度已创建: ${data.item.id} (${data.item.workflow_name || "工作区工作流"}) 每 ${data.item.interval_sec}s，批次=${planText}`);
-        setStatus("任务调度已创建");
+        log(`调度已创建: ${data.item.task_name || data.item.id} (${data.item.workflow_name || "工作区工作流"}) 每 ${data.item.interval_sec}s，批次=${planText}${runNow ? "，立即执行=是" : ""}`);
+        setStatus(runNow ? "任务调度已创建并立即执行" : "任务调度已创建");
+        if (runNow) {
+          schedulerRunning = true;
+          updateRunButtonState();
+          switchBottomTab("report");
+          clearReportPanel("执行报告：调度正在执行...");
+          clearPreviewTable("结果预览：调度执行中...");
+        }
         closeScheduleModal();
+        await refreshRuntimeStatus(true);
       } catch (err) {
         log("创建调度失败: " + err.message);
         setStatus("创建调度失败");
@@ -1150,23 +1317,44 @@ const graph = new LGraph();
       return [];
     }
 
+    function buildScheduleOutcomeKey(item) {
+      if (!item) return "";
+      const scheduleId = String(item.id || "").trim();
+      const reportPath = String(item.last_report_path || "").trim();
+      const lastRunAt = Number(item.last_run_at || 0);
+      if (!scheduleId || !reportPath || !Number.isFinite(lastRunAt) || lastRunAt <= 0) return "";
+      return `${scheduleId}|${lastRunAt}|${reportPath}`;
+    }
+
     function statusTextFromSchedule(item) {
       if (!item) return "未知";
+      const sameSchedule = String(item.id || "") === String(activeScheduleRunId || "");
+      if (sameSchedule && executionProgress.active) {
+        if (executionProgress.total > 0) {
+          const done = Math.min(executionProgress.doneSet.size, executionProgress.total);
+          return `执行中 ${done}/${executionProgress.total}`;
+        }
+        return "执行中";
+      }
       const raw = String(item.last_status || "").toLowerCase();
       if (raw === "running") return "执行中";
       if (raw === "ok") return "成功";
       if (raw === "error") return "失败";
       if (raw === "done") return "已完成";
+      if (raw === "busy") return "排队中";
       if (item.enabled) return "待执行";
       return "已停止";
     }
 
     function statusClassFromSchedule(item) {
+      const sameSchedule = String(item && item.id ? item.id : "") === String(activeScheduleRunId || "");
+      if (sameSchedule && executionProgress.active) return "running";
       const raw = String(item && item.last_status ? item.last_status : "").toLowerCase();
       if (raw === "running") return "running";
       if (raw === "ok") return "ok";
       if (raw === "error") return "error";
       if (raw === "done") return "done";
+      if (raw === "busy") return "running";
       return "";
     }
 
@@ -1176,16 +1364,68 @@ const graph = new LGraph();
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "读取调度失败");
         const items = Array.isArray(data.items) ? data.items : [];
-        items.sort((a, b) => Number(b.last_run_at || 0) - Number(a.last_run_at || 0));
+        items.sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0));
         scheduleListState.items = items;
         if (resetPage) scheduleListState.page = 1;
         const total = scheduleListState.items.length;
         const maxPage = Math.max(1, Math.ceil(total / scheduleListState.pageSize));
         if (scheduleListState.page > maxPage) scheduleListState.page = maxPage;
         renderScheduleList();
+        if (schedulerRunning) {
+          await refreshRuntimeStatus(true);
+          return;
+        }
+        const latestDone = items.find((x) => {
+          if (!x) return false;
+          const latestPath = String(x.last_report_path || "").trim();
+          if (!latestPath) return false;
+          if (Number(x.last_run_at || 0) <= 0) return false;
+          const st = String(x.last_status || "").toLowerCase();
+          return st !== "running";
+        });
+        if (latestDone) {
+          const latestPath = String(latestDone.last_report_path || "").trim();
+          const latestKey = buildScheduleOutcomeKey(latestDone);
+          if (latestPath && latestKey && latestKey !== lastAutoLoadedScheduleOutcomeKey) {
+            lastAutoLoadedScheduleOutcomeKey = latestKey;
+            lastAutoLoadedScheduleReportPath = latestPath;
+            await openReportInBottomTab(latestPath, "调度执行报告");
+          }
+        }
+        await refreshRuntimeStatus(true);
       } catch (err) {
         log("读取调度失败: " + err.message);
         setStatus("读取调度失败");
+      }
+    }
+
+    async function refreshLatestScheduleOutcome(silent = true) {
+      try {
+        const res = await fetch("/api/schedules");
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "读取调度失败");
+        if (schedulerRunning) return;
+        const items = Array.isArray(data.items) ? data.items.slice() : [];
+        items.sort((a, b) => Number(b.last_run_at || 0) - Number(a.last_run_at || 0));
+        const latest = items.find((x) => {
+          if (!x) return false;
+          const p = String(x.last_report_path || "").trim();
+          if (!p) return false;
+          if (Number(x.last_run_at || 0) <= 0) return false;
+          const st = String(x.last_status || "").toLowerCase();
+          return st !== "running";
+        });
+        if (!latest) return;
+        const latestPath = String(latest.last_report_path || "").trim();
+        const latestKey = buildScheduleOutcomeKey(latest);
+        if (!latestPath || !latestKey || latestKey === lastAutoLoadedScheduleOutcomeKey) return;
+        lastAutoLoadedScheduleOutcomeKey = latestKey;
+        lastAutoLoadedScheduleReportPath = latestPath;
+        await openReportInBottomTab(latestPath, "调度执行报告");
+      } catch (err) {
+        if (!silent) {
+          log("刷新调度执行结果失败: " + err.message);
+        }
       }
     }
 
@@ -1217,12 +1457,17 @@ const graph = new LGraph();
       for (const item of pageItems) {
         const wrap = document.createElement("div");
         wrap.className = "schedule-item";
+        const isActiveSchedule = String(item.id || "") === String(activeScheduleRunId || "");
+        if (isActiveSchedule && schedulerRunning) {
+          wrap.classList.add("running-active");
+        }
 
         const top = document.createElement("div");
         top.className = "schedule-item-top";
         const idEl = document.createElement("div");
         idEl.className = "schedule-item-id";
-        idEl.textContent = `ID: ${String(item.id || "-")}`;
+        const taskName = String(item.task_name || "").trim() || `调度任务-${String(item.id || "-")}`;
+        idEl.textContent = `${taskName}  (ID: ${String(item.id || "-")})`;
         top.appendChild(idEl);
         const st = document.createElement("span");
         st.className = "schedule-status " + statusClassFromSchedule(item);
@@ -1242,7 +1487,6 @@ const graph = new LGraph();
           ["工作流", source],
           ["间隔", `${Number(item.interval_sec || 0)} 秒`],
           ["批次", batchText],
-          ["启用", item.enabled ? "是" : "否"],
           ["导出目录", exportDirText],
           ["下次执行", formatEpochTime(item.next_run_at)],
           ["上次执行", formatEpochTime(item.last_run_at)]
@@ -1270,15 +1514,19 @@ const graph = new LGraph();
 
         const actions = document.createElement("div");
         actions.className = "schedule-item-actions";
-        const toggleBtn = document.createElement("button");
-        toggleBtn.textContent = item.enabled ? "终止" : "开始";
-        toggleBtn.addEventListener("click", async () => {
-          await setScheduleEnabled(String(item.id || ""), !item.enabled);
+        const isRunning =
+          String(item.id || "") === String(activeScheduleRunId || "") ||
+          String(item.last_status || "").toLowerCase() === "running";
+        const startBtn = document.createElement("button");
+        startBtn.textContent = isRunning ? "执行中..." : "开始";
+        startBtn.disabled = isRunning || schedulerRunning;
+        startBtn.addEventListener("click", async () => {
+          await runScheduleNow(String(item.id || ""));
         });
-        actions.appendChild(toggleBtn);
+        actions.appendChild(startBtn);
 
         const reportBtn = document.createElement("button");
-        reportBtn.textContent = "查看报告";
+        reportBtn.textContent = "执行报告";
         reportBtn.disabled = !item.last_report_path;
         reportBtn.addEventListener("click", async () => {
           await openScheduleReport(String(item.last_report_path || ""));
@@ -1320,22 +1568,139 @@ const graph = new LGraph();
       }
     }
 
-    async function setScheduleEnabled(scheduleId, enabled) {
+    async function runScheduleNow(scheduleId) {
       if (!scheduleId) return;
-      try {
-        const res = await fetch("/api/schedules/toggle", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: scheduleId, enabled: !!enabled })
-        });
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "更新状态失败");
-        setStatus(enabled ? "调度已开始" : "调度已终止");
-        await refreshScheduleList(false);
-      } catch (err) {
-        log("更新调度状态失败: " + err.message);
-        setStatus("更新调度状态失败");
+      if (activeScheduleRunId && String(activeScheduleRunId) !== String(scheduleId)) {
+        setStatus("已有调度任务执行中，请等待当前任务完成");
+        return;
       }
+      const scheduleItem = (scheduleListState.items || []).find((x) => String((x && x.id) || "") === String(scheduleId));
+      const scheduleWorkflow = scheduleItem && scheduleItem.workflow_data && typeof scheduleItem.workflow_data === "object"
+        ? scheduleItem.workflow_data
+        : null;
+      if (!scheduleWorkflow || Array.isArray(scheduleWorkflow) || !Object.keys(scheduleWorkflow).length) {
+        setStatus("调度工作流为空，无法执行");
+        return;
+      }
+      try {
+        importWorkflowToCanvas(scheduleWorkflow);
+        log(`已加载调度工作流到画布: ${String(scheduleId)}`);
+        resetNodeProgressHighlight();
+        clearPreviewImagesOnNodes();
+        startExecutionProgress(scheduleWorkflow);
+        activeScheduleRunId = String(scheduleId);
+        if (scheduleItem) {
+          scheduleItem.run_count = 0;
+          scheduleItem.last_run_at = 0;
+          scheduleItem.last_status = "running";
+          scheduleItem.last_error = "";
+          scheduleItem.last_report_path = "";
+          renderScheduleList();
+        }
+        schedulerRunning = true;
+        updateRunButtonState();
+        switchBottomTab("report");
+        clearReportPanel("执行报告：调度正在执行...");
+        clearPreviewTable("结果预览：调度执行中...");
+        log(`开始执行调度任务: ${String(scheduleId)}`);
+        const data = await runScheduleWorkflowStream(scheduleId);
+        log("调度执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
+        if (data.report_path) {
+          log(`调度执行报告: ${data.report_path}`);
+          currentReportPath = String(data.report_path || "");
+          await openReportInBottomTab(currentReportPath, "调度执行报告");
+        }
+        applyPreviewImagesToNodes(data.outputs || {});
+        renderPreviewTable(data.outputs || {});
+        setStatus("调度执行完成");
+        await refreshScheduleList(false);
+        await refreshRuntimeStatus(true);
+      } catch (err) {
+        const msg = err && err.message ? String(err.message) : String(err);
+        log("调度执行失败: " + msg);
+        clearPreviewTable("结果预览：调度执行失败");
+        setStatus("调度执行失败");
+        await refreshScheduleList(false);
+        await refreshRuntimeStatus(true);
+      } finally {
+        activeScheduleRunId = "";
+        stopExecutionProgress();
+      }
+    }
+
+    async function runScheduleWorkflowStream(scheduleId) {
+      const res = await fetch("/api/schedules/run-now-stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: scheduleId })
+      });
+
+      if (!res.ok) {
+        try {
+          const data = await res.json();
+          const msg = data && data.error ? String(data.error) : "";
+          if (msg) throw new Error(msg);
+        } catch (err) {
+          if (err && err.message) throw err;
+          throw new Error(`执行失败（HTTP ${res.status}）`);
+        }
+      }
+
+      if (!res.body || typeof res.body.getReader !== "function") {
+        throw new Error("浏览器不支持流式执行");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let finalResult = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let nl = buffer.indexOf("\n");
+        while (nl >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (line) {
+            const msg = JSON.parse(line);
+            if (msg.type === "log") {
+              log(String(msg.line || ""));
+            } else if (msg.type === "event") {
+              handleRunEventMessage(msg);
+            } else if (msg.type === "error") {
+              throw new Error(String(msg.error || "执行失败"));
+            } else if (msg.type === "result") {
+              finalResult = {
+                outputs: msg.outputs || {},
+                logs: msg.logs || [],
+                report_path: msg.report_path || ""
+              };
+            }
+          }
+          nl = buffer.indexOf("\n");
+        }
+      }
+
+      const tail = buffer.trim();
+      if (tail) {
+        const msg = JSON.parse(tail);
+        if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
+        if (msg.type === "result") {
+          finalResult = {
+            outputs: msg.outputs || {},
+            logs: msg.logs || [],
+            report_path: msg.report_path || ""
+          };
+        }
+      }
+
+      if (!finalResult) {
+        throw new Error("执行流未返回结果");
+      }
+      return finalResult;
     }
 
     async function deleteScheduleItem(scheduleId) {
@@ -1372,27 +1737,9 @@ const graph = new LGraph();
 
     async function openScheduleReport(path) {
       if (!path) return;
-      try {
-        const res = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "读取报告失败");
-        const report = data.report || {};
-        const metaEl = document.getElementById("schedule-report-meta");
-        const contentEl = document.getElementById("schedule-report-content");
-        const pathEl = document.getElementById("schedule-report-path");
-        if (!metaEl || !contentEl || !pathEl) return;
-        currentScheduleReportPath = String(data.path || path);
-        pathEl.textContent = currentScheduleReportPath;
-        pathEl.title = currentScheduleReportPath;
-        metaEl.textContent = `状态: ${report.ok ? "成功" : "失败"} | 开始: ${report.started_at || "-"} | 结束: ${report.ended_at || "-"} | 耗时: ${report.elapsed_sec || 0}s`;
-        contentEl.textContent = JSON.stringify(report, null, 2);
-        const modal = document.getElementById("schedule-report-modal");
-        if (modal) modal.classList.remove("hidden");
-        setStatus("已打开调度执行报告");
-      } catch (err) {
-        log("读取调度报告失败: " + err.message);
-        setStatus("读取调度报告失败");
-      }
+      currentScheduleReportPath = String(path || "");
+      await openReportInBottomTab(path, "调度执行报告");
+      setStatus("已打开调度执行报告");
     }
 
     function closeScheduleReportModal() {
@@ -1409,19 +1756,11 @@ const graph = new LGraph();
       await openPathInFileManager(currentScheduleReportPath);
     }
 
-    async function openReportFolder() {
-      try {
-        const res = await fetch("/api/open-location", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: "outputs/reports" })
-        });
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "打开失败");
-        setStatus("已打开报告目录");
-      } catch (err) {
-        log("打开报告目录失败: " + err.message);
-        setStatus("打开报告目录失败");
+    function showReportTab() {
+      if (currentReportPath) {
+        openReportInBottomTab(currentReportPath, "执行报告");
+      } else {
+        openReportInBottomTab("outputs/reports/manual_latest.json", "执行报告");
       }
     }
 
@@ -1486,23 +1825,33 @@ const graph = new LGraph();
     }
 
     function switchBottomTab(tab) {
-      activeBottomTab = tab === "preview" ? "preview" : "logs";
+      if (tab === "preview") activeBottomTab = "preview";
+      else if (tab === "report") activeBottomTab = "report";
+      else activeBottomTab = "logs";
       const logs = document.getElementById("logs");
       const preview = document.getElementById("preview-panel");
+      const report = document.getElementById("report-panel");
       const tabLogBtn = document.getElementById("tab-log-btn");
       const tabPreviewBtn = document.getElementById("tab-preview-btn");
+      const tabReportBtn = document.getElementById("tab-report-btn");
       const clearBtn = document.getElementById("clear-log-btn");
 
       const onLogs = activeBottomTab === "logs";
+      const onPreview = activeBottomTab === "preview";
+      const onReport = activeBottomTab === "report";
       logs.classList.toggle("hidden", !onLogs);
-      preview.classList.toggle("hidden", onLogs);
+      preview.classList.toggle("hidden", !onPreview);
+      if (report) report.classList.toggle("hidden", !onReport);
       tabLogBtn.classList.toggle("active", onLogs);
-      tabPreviewBtn.classList.toggle("active", !onLogs);
+      tabPreviewBtn.classList.toggle("active", onPreview);
+      if (tabReportBtn) tabReportBtn.classList.toggle("active", onReport);
       clearBtn.classList.toggle("hidden", !onLogs);
       if (onLogs) {
         scrollLogsToLatest(true);
       }
-      setStatus(onLogs ? "已切换到执行日志" : "已切换到结果预览");
+      if (onLogs) setStatus("已切换到执行日志");
+      else if (onPreview) setStatus("已切换到结果预览");
+      else setStatus("已切换到执行报告");
     }
 
     function normalizeRegionsText(value) {
@@ -2571,6 +2920,93 @@ const graph = new LGraph();
       body.innerHTML = '<div class="preview-empty">请在工作流中连接“展示结果节点”，执行后将在这里显示前 10 条记录。</div>';
     }
 
+    function clearReportPanel(metaText = "执行报告：暂无") {
+      const meta = document.getElementById("report-meta-text");
+      const body = document.getElementById("report-body");
+      if (!meta || !body) return;
+      meta.textContent = metaText;
+      body.innerHTML = '<div class="preview-empty">执行后会在这里展示执行报告。</div>';
+      currentReportPath = "";
+    }
+
+    function renderReportSummaryCard(title, value, status = "") {
+      const cls = status ? `report-card ${status}` : "report-card";
+      return `<div class="${cls}"><div class="k">${title}</div><div class="v">${value}</div></div>`;
+    }
+
+    function renderExecutionReport(payload, reportPath = "", sourceText = "执行报告") {
+      const meta = document.getElementById("report-meta-text");
+      const body = document.getElementById("report-body");
+      if (!meta || !body) return;
+
+      const report = payload && typeof payload === "object" ? payload : {};
+      const ok = !!report.ok;
+      const statusText = ok ? "成功" : "失败";
+      const startedAt = String(report.started_at || "-");
+      const endedAt = String(report.ended_at || "-");
+      const elapsed = Number(report.elapsed_sec || 0).toFixed(3) + "s";
+      const nodeCount = Number(report.workflow_node_count || 0);
+      const outputCount = Number(report.output_node_count || 0);
+      const logCount = Number(report.log_count || 0);
+      const errorText = String(report.error || "").trim();
+
+      meta.textContent = `${sourceText}：${statusText} | 开始 ${startedAt} | 结束 ${endedAt}`;
+      const cardsHtml = [
+        renderReportSummaryCard("状态", statusText, ok ? "ok" : "error"),
+        renderReportSummaryCard("耗时", elapsed),
+        renderReportSummaryCard("工作流节点", String(nodeCount)),
+        renderReportSummaryCard("输出节点", String(outputCount)),
+        renderReportSummaryCard("日志条数", String(logCount))
+      ].join("");
+
+      const errorHtml = errorText
+        ? `<div class="report-error-box"><strong>错误信息：</strong><br />${escapeHtml(errorText)}</div>`
+        : "";
+
+      const jsonText = JSON.stringify(report, null, 2);
+      body.innerHTML = `
+        <div class="report-summary-grid">${cardsHtml}</div>
+        ${errorHtml}
+        <div class="report-json-title">报告路径：${reportPath ? escapeHtml(reportPath) : "-"}</div>
+        <pre class="report-json">${escapeHtml(jsonText)}</pre>
+      `;
+      currentReportPath = reportPath || "";
+    }
+
+    function escapeHtml(text) {
+      const raw = String(text == null ? "" : text);
+      return raw
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    async function openReportInBottomTab(path, sourceText = "执行报告") {
+      if (!path) {
+        clearReportPanel("执行报告：暂无");
+        switchBottomTab("report");
+        return;
+      }
+      try {
+        const res = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "读取报告失败");
+        const report = data.report || {};
+        renderExecutionReport(report, String(data.path || path), sourceText);
+        if (report && typeof report === "object" && report.outputs && typeof report.outputs === "object") {
+          applyPreviewImagesToNodes(report.outputs);
+          renderPreviewTable(report.outputs);
+        }
+        switchBottomTab("report");
+      } catch (err) {
+        log("读取执行报告失败: " + err.message);
+        clearReportPanel("执行报告：读取失败");
+        switchBottomTab("report");
+      }
+    }
+
     function renderPreviewTable(outputs) {
       const preview = pickPreviewOutput(outputs);
       if (!preview) {
@@ -2761,12 +3197,12 @@ const graph = new LGraph();
           return;
         }
         const workflowPicker = document.getElementById("workflow-picker-modal");
-        if (!workflowPicker.classList.contains("hidden")) {
+        if (workflowPicker && !workflowPicker.classList.contains("hidden")) {
           closeWorkflowPicker();
           return;
         }
         const helperModal = document.getElementById("region-helper-modal");
-        if (!helperModal.classList.contains("hidden")) {
+        if (helperModal && !helperModal.classList.contains("hidden")) {
           closeRegionHelper();
           return;
         }
@@ -2800,11 +3236,11 @@ const graph = new LGraph();
           closeScheduleReportModal();
           return;
         }
-        const modal = document.getElementById("regions-modal");
-        if (!modal.classList.contains("hidden")) {
+        const regionsModal = document.getElementById("regions-modal");
+        if (regionsModal && !regionsModal.classList.contains("hidden")) {
           closeRegionsEditor();
+          return;
         }
-        return;
       }
 
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -2828,62 +3264,7 @@ const graph = new LGraph();
     if (localWorkflowInput) {
       localWorkflowInput.addEventListener("change", handleLocalWorkflowFileChange);
     }
-    const imageLightboxModal = document.getElementById("image-lightbox-modal");
-    if (imageLightboxModal) {
-      imageLightboxModal.addEventListener("click", (event) => {
-        if (event.target === imageLightboxModal) {
-          closeImageLightbox();
-        }
-      });
-    }
-    const tapPickerModal = document.getElementById("tap-picker-modal");
-    if (tapPickerModal) {
-      tapPickerModal.addEventListener("click", (event) => {
-        if (event.target === tapPickerModal) {
-          closeTapPicker();
-        }
-      });
-    }
-    const swipePickerModal = document.getElementById("swipe-picker-modal");
-    if (swipePickerModal) {
-      swipePickerModal.addEventListener("click", (event) => {
-        if (event.target === swipePickerModal) {
-          closeSwipePicker();
-        }
-      });
-    }
-    const dedupModal = document.getElementById("dedup-keys-modal");
-    if (dedupModal) {
-      dedupModal.addEventListener("click", (event) => {
-        if (event.target === dedupModal) {
-          closeDedupKeysEditor();
-        }
-      });
-    }
-    const scheduleModal = document.getElementById("schedule-modal");
-    if (scheduleModal) {
-      scheduleModal.addEventListener("click", (event) => {
-        if (event.target === scheduleModal) {
-          closeScheduleModal();
-        }
-      });
-    }
-    const scheduleListModal = document.getElementById("schedule-list-modal");
-    if (scheduleListModal) {
-      scheduleListModal.addEventListener("click", (event) => {
-        if (event.target === scheduleListModal) {
-          closeScheduleListModal();
-        }
-      });
-    }
-    const scheduleReportModal = document.getElementById("schedule-report-modal");
-    if (scheduleReportModal) {
-      scheduleReportModal.addEventListener("click", (event) => {
-        if (event.target === scheduleReportModal) {
-          closeScheduleReportModal();
-        }
-      });
-    }
+    const scheduleNameInput = document.getElementById("schedule-name-input");
     const scheduleIntervalInput = document.getElementById("schedule-interval-input");
     const scheduleMaxRunsInput = document.getElementById("schedule-max-runs-input");
     const onScheduleInputEnter = (event) => {
@@ -2892,8 +3273,19 @@ const graph = new LGraph();
         submitScheduleTask();
       }
     };
+    if (scheduleNameInput) scheduleNameInput.addEventListener("keydown", onScheduleInputEnter);
     if (scheduleIntervalInput) scheduleIntervalInput.addEventListener("keydown", onScheduleInputEnter);
     if (scheduleMaxRunsInput) scheduleMaxRunsInput.addEventListener("keydown", onScheduleInputEnter);
+
+    updateRunButtonState();
+    refreshRuntimeStatus(true);
+    refreshLatestScheduleOutcome(true);
+    if (runtimeStatusTimer) clearInterval(runtimeStatusTimer);
+    runtimeStatusTimer = setInterval(() => {
+      if (workflowRunning) return;
+      refreshRuntimeStatus(true);
+      refreshLatestScheduleOutcome(true);
+    }, 3000);
 
     refreshDevices();
     loadDefaultWorkflow();

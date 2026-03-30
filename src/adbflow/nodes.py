@@ -5,6 +5,7 @@ import io
 import json
 import secrets
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,12 +24,17 @@ class NodeExecutionError(RuntimeError):
     pass
 
 
+class WorkflowCancelledError(RuntimeError):
+    pass
+
+
 @dataclass
 class NodeContext:
     adb: ADBClient
     logs: list[str]
     on_log: Callable[[str], None] | None = None
     on_event: Callable[[dict[str, Any]], None] | None = None
+    cancel_event: threading.Event | None = None
 
     def log(self, text: str) -> None:
         self.logs.append(text)
@@ -45,6 +51,10 @@ class NodeContext:
             self.on_event({"event": event_type, **payload})
         except Exception:
             pass
+
+    def ensure_not_cancelled(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise WorkflowCancelledError("执行已取消")
 
 
 class BaseNode:
@@ -91,11 +101,24 @@ class BaseNode:
             raise NodeExecutionError("上游节点数据中缺少设备编号")
         return str(device_id)
 
+    @staticmethod
+    def _sleep_with_cancel(ctx: NodeContext, duration_sec: float) -> None:
+        remaining = max(0.0, float(duration_sec))
+        if remaining <= 0:
+            return
+        step = 0.2
+        while remaining > 0:
+            ctx.ensure_not_cancelled()
+            chunk = min(step, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
+
 
 class StartDeviceNode(BaseNode):
     class_type = "StartDevice"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         requested = str(inputs.get("device_id", "")).strip()
         devices = ctx.adb.list_devices()
         if not devices:
@@ -120,6 +143,7 @@ class TapNode(BaseNode):
     class_type = "Tap"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         device_id = self._device_id(payload)
         x = self._as_int(inputs.get("x"), 540)
@@ -133,6 +157,7 @@ class SwipeNode(BaseNode):
     class_type = "Swipe"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         device_id = self._device_id(payload)
         direction = str(inputs.get("direction", "up")).strip().lower()
@@ -181,6 +206,7 @@ class WaitNode(BaseNode):
     class_type = "Wait"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         duration_sec = max(
             0.0,
@@ -190,7 +216,7 @@ class WaitNode(BaseNode):
             ),
         )
         if duration_sec > 0:
-            time.sleep(duration_sec)
+            self._sleep_with_cancel(ctx, duration_sec)
         ctx.log(f"[等待节点] 等待 {duration_sec:.2f} 秒")
         return {**payload, "last_action": "wait", "wait_sec": duration_sec}
 
@@ -199,6 +225,7 @@ class InputFillNode(BaseNode):
     class_type = "InputFill"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         device_id = self._device_id(payload)
         text = str(inputs.get("text", ""))
@@ -241,6 +268,7 @@ class ScreenshotNode(BaseNode):
     class_type = "Screenshot"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         device_id = self._device_id(payload)
         remote_dir = str(inputs.get("remote_dir", "/sdcard/adbflow")).strip()
@@ -263,13 +291,14 @@ class ScreenshotNode(BaseNode):
 
         remote_paths: list[str] = list(payload.get("remote_paths") or [])
         for i in range(capture_count):
+            ctx.ensure_not_cancelled()
             ts_ms = int(time.time() * 1000)
             rand_suffix = secrets.token_hex(3)
             name = f"{prefix}_{ts_ms}_{rand_suffix}_r{loop_iteration}_s{i + 1}.png"
             remote_path = f"{remote_dir.rstrip('/')}/{name}"
             ctx.adb.screenshot_to_remote(device_id, remote_path)
             remote_paths.append(remote_path)
-            time.sleep(capture_pause_sec)
+            self._sleep_with_cancel(ctx, capture_pause_sec)
 
             if scroll and i < capture_count - 1:
                 if scroll_distance_px is not None:
@@ -282,7 +311,7 @@ class ScreenshotNode(BaseNode):
                 else:
                     sx1, sy1, sx2, sy2 = _direction_swipe_coords(ctx.adb, device_id, scroll_direction)
                 ctx.adb.swipe(device_id, sx1, sy1, sx2, sy2, duration_ms=swipe_duration_ms)
-                time.sleep(swipe_pause_sec)
+                self._sleep_with_cancel(ctx, swipe_pause_sec)
 
         distance_text = f"，滚动像素={scroll_distance_px}" if scroll and scroll_distance_px is not None else ""
         ctx.log(
@@ -303,6 +332,7 @@ class LoopStartNode(BaseNode):
     class_type = "LoopStart"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         loop_count = max(1, self._as_int(inputs.get("loop_count"), 1))
         loop_start_wait_sec = max(0.0, self._as_float(inputs.get("loop_start_wait_sec"), 0.0))
@@ -318,6 +348,7 @@ class LoopEndNode(BaseNode):
     class_type = "LoopEnd"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         ctx.log("[循环结束节点] 循环区间执行完成")
         return {**payload}
@@ -327,6 +358,7 @@ class PullToPcNode(BaseNode):
     class_type = "PullToPC"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         device_id = self._device_id(payload)
         remote_paths = payload.get("remote_paths") or []
@@ -335,14 +367,19 @@ class PullToPcNode(BaseNode):
 
         save_dir = Path(str(inputs.get("save_dir", "outputs/screenshots"))).resolve()
         save_dir.mkdir(parents=True, exist_ok=True)
-        _clear_local_dir_contents(save_dir)
-        ctx.log(f"[回传节点] 已清空截图目录：{save_dir}")
+        clear_save_dir = self._as_bool(inputs.get("clear_save_dir"), False)
+        if clear_save_dir:
+            _clear_local_dir_contents(save_dir)
+            ctx.log(f"[回传节点] 已清空截图目录：{save_dir}")
+        else:
+            ctx.log(f"[回传节点] 保留目录历史文件：{save_dir}")
         cleanup_remote = self._as_bool(inputs.get("cleanup_remote"), False)
         stitch_scroll = self._as_bool(inputs.get("stitch_scroll"), True)
         max_overlap_px = self._as_int(inputs.get("max_overlap_px"), 300)
 
         local_paths: list[str] = []
         for remote_path in remote_paths:
+            ctx.ensure_not_cancelled()
             local_path = save_dir / Path(remote_path).name
             ctx.adb.pull(device_id, remote_path, str(local_path))
             local_paths.append(str(local_path))
@@ -364,6 +401,7 @@ class PullToPcNode(BaseNode):
             "local_paths": local_paths,
             "stitched_path": stitched_path,
             "save_dir": str(save_dir),
+            "clear_save_dir": clear_save_dir,
         }
 
 
@@ -383,6 +421,7 @@ class EasyOCRNode(BaseNode):
     class_type = "EasyOCR"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = inputs.get("input") if isinstance(inputs.get("input"), dict) else {}
         local_paths = list(payload.get("local_paths") or [])
         stitched_path = payload.get("stitched_path")
@@ -409,6 +448,7 @@ class EasyOCRNode(BaseNode):
 
         rows: list[dict[str, Any]] = []
         for image_path in image_paths:
+            ctx.ensure_not_cancelled()
             img = Image.open(image_path).convert("RGB")
             img_w, img_h = img.size
             targets = regions or [{"name": "full", "x": 0, "y": 0, "w": img_w, "h": img_h}]
@@ -448,6 +488,7 @@ class ExportExcelNode(BaseNode):
     class_type = "ExportExcel"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         rows = list(payload.get("ocr_rows") or [])
         region_names = [str(x) for x in (payload.get("ocr_region_names") or []) if str(x).strip()]
@@ -514,6 +555,7 @@ class PreviewExcelNode(BaseNode):
     class_type = "PreviewExcel"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = self._input_payload(inputs)
         excel_path = str(payload.get("excel_path", "")).strip()
         if not excel_path:
@@ -547,6 +589,7 @@ class PreviewImagesNode(BaseNode):
     class_type = "PreviewImages"
 
     def run(self, inputs: dict[str, Any], ctx: NodeContext) -> Any:
+        ctx.ensure_not_cancelled()
         payload = inputs.get("input") if isinstance(inputs.get("input"), dict) else {}
         folder_dir = str(inputs.get("folder_dir", "")).strip()
         max_images = max(1, min(50, self._as_int(inputs.get("max_images"), 12)))

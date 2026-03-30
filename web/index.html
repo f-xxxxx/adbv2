@@ -24,7 +24,6 @@
       <button onclick="exportWorkflow()"><span class="btn-icon">&#8681;</span>导出配置</button>
       <button onclick="createScheduleTask()"><span class="btn-icon">&#9200;</span>创建调度</button>
       <button onclick="showScheduleList()"><span class="btn-icon">&#128196;</span>调度列表</button>
-      <button onclick="openReportFolder()"><span class="btn-icon">&#128202;</span>执行报告</button>
       <button class="warn" onclick="clearGraph()"><span class="btn-icon">&#128465;</span>清空画布</button>
       <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><span class="btn-icon">&#9654;</span>运行工作流</button>
     </div>
@@ -90,6 +89,7 @@
         <div class="log-head">
           <div class="tab-buttons">
             <button id="tab-log-btn" class="tab-btn active" onclick="switchBottomTab('logs')">执行日志</button>
+            <button id="tab-report-btn" class="tab-btn" onclick="switchBottomTab('report')">执行报告</button>
             <button id="tab-preview-btn" class="tab-btn" onclick="switchBottomTab('preview')">结果预览</button>
           </div>
           <div class="log-tools">
@@ -105,6 +105,14 @@
           </div>
           <div id="preview-body" class="preview-body">
             <div class="preview-empty">请在工作流中连接“展示结果节点”，执行后将在这里显示前 10 条记录。</div>
+          </div>
+        </div>
+          <div id="report-panel" class="preview-panel hidden">
+          <div class="preview-meta">
+            <span id="report-meta-text">执行报告：暂无</span>
+          </div>
+          <div id="report-body" class="preview-body">
+            <div class="preview-empty">执行后会在这里展示执行报告。</div>
           </div>
         </div>
         </div>
@@ -174,6 +182,11 @@
       <div class="modal-body">
         <div class="schedule-form">
           <label class="schedule-field">
+            <span>任务名称</span>
+            <input id="schedule-name-input" type="text" maxlength="120" placeholder="请输入调度任务名称" />
+            <small>用于在调度列表中快速识别任务</small>
+          </label>
+          <label class="schedule-field">
             <span>执行间隔（秒）</span>
             <input id="schedule-interval-input" type="number" min="10" step="1" value="300" />
             <small>最小 10 秒，建议 >= 60 秒</small>
@@ -182,6 +195,13 @@
             <span>执行批次</span>
             <input id="schedule-max-runs-input" type="number" min="0" step="1" value="0" />
             <small>0 表示无限次；大于 0 表示执行指定批次后自动停止</small>
+          </label>
+          <label class="schedule-field schedule-check-field">
+            <span>保存后立即执行</span>
+            <div class="schedule-check-row">
+              <input id="schedule-run-now-input" type="checkbox" />
+              <small>默认不执行；勾选后创建成功会立刻执行一次</small>
+            </div>
           </label>
         </div>
       </div>

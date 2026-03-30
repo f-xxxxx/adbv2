@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from .adb_client import ADBClient
-from .nodes import NODE_REGISTRY, NodeContext, NodeExecutionError
+from .nodes import NODE_REGISTRY, NodeContext, NodeExecutionError, WorkflowCancelledError
 
 
 class WorkflowFormatError(ValueError):
@@ -37,16 +38,24 @@ class WorkflowEngine:
         workflow: dict[str, Any],
         on_log: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ExecutionResult:
         if not isinstance(workflow, dict) or not workflow:
             raise WorkflowFormatError("工作流必须是非空对象")
 
         logs: list[str] = []
-        ctx = NodeContext(adb=self.adb, logs=logs, on_log=on_log, on_event=on_event)
+        ctx = NodeContext(
+            adb=self.adb,
+            logs=logs,
+            on_log=on_log,
+            on_event=on_event,
+            cancel_event=cancel_event,
+        )
         cache: dict[tuple[str, int], Any] = {}
         visiting: set[str] = set()
 
         for node_id in self._node_ids(workflow):
+            ctx.ensure_not_cancelled()
             self._evaluate_node(node_id, workflow, cache, visiting, ctx)
 
         final_outputs = {
@@ -64,6 +73,7 @@ class WorkflowEngine:
         visiting: set[str],
         ctx: NodeContext,
     ) -> Any:
+        ctx.ensure_not_cancelled()
         key = (node_id, 0)
         if key in cache:
             return cache[key]
@@ -111,6 +121,8 @@ class WorkflowEngine:
                     resolved_inputs=resolved_inputs,
                     ctx=ctx,
                 )
+        except WorkflowCancelledError:
+            raise
         except (NodeExecutionError, Exception) as exc:
             ctx.event(
                 "node_error",
@@ -134,6 +146,7 @@ class WorkflowEngine:
         resolved_inputs: dict[str, Any],
         ctx: NodeContext,
     ) -> Any:
+        ctx.ensure_not_cancelled()
         node_impl = NODE_REGISTRY[class_type]()
         ctx.event("node_start", node_id=node_id, class_type=class_type, display_type=display_type)
         ctx.log(f"[节点 {node_id}] 类型={display_type}，开始执行")
@@ -151,6 +164,7 @@ class WorkflowEngine:
         visiting: set[str],
         ctx: NodeContext,
     ) -> Any:
+        ctx.ensure_not_cancelled()
         loop_start_id = self._find_loop_start_id_for_end(node_id, workflow)
         loop_start_node = workflow.get(loop_start_id) or {}
         loop_start_inputs = loop_start_node.get("inputs") if isinstance(loop_start_node, dict) else {}
@@ -181,8 +195,9 @@ class WorkflowEngine:
         )
 
         for iter_index in range(2, loop_count + 1):
+            ctx.ensure_not_cancelled()
             if loop_start_wait_sec > 0:
-                time.sleep(loop_start_wait_sec)
+                self._sleep_with_cancel(ctx, loop_start_wait_sec)
             if loop_state is not None:
                 cache[(loop_start_id, 0)] = self._with_loop_meta(
                     loop_state,
@@ -219,6 +234,7 @@ class WorkflowEngine:
         visiting: set[str],
         ctx: NodeContext,
     ) -> Any:
+        ctx.ensure_not_cancelled()
         # Reference style: ["node_id", output_index]
         if (
             isinstance(value, list)
@@ -361,6 +377,18 @@ class WorkflowEngine:
             return (int(k), k) if k.isdigit() else (10**9, k)
 
         return sorted(workflow.keys(), key=_key)
+
+    @staticmethod
+    def _sleep_with_cancel(ctx: NodeContext, duration_sec: float) -> None:
+        remaining = max(0.0, float(duration_sec))
+        if remaining <= 0:
+            return
+        step = 0.2
+        while remaining > 0:
+            ctx.ensure_not_cancelled()
+            chunk = min(step, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
 
 
 def _class_type_display_name(class_type: str) -> str:

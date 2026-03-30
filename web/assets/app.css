@@ -298,6 +298,68 @@
       color: var(--muted);
       padding: 10px 2px;
     }
+    .report-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+      overflow-x: auto;
+      white-space: nowrap;
+      align-items: stretch;
+    }
+    .report-card {
+      border: 1px solid #414854;
+      border-radius: 6px;
+      background: #242a33;
+      padding: 8px;
+      display: grid;
+      gap: 4px;
+    }
+    .report-card .k {
+      font-size: 12px;
+      color: #93a0b5;
+    }
+    .report-card .v {
+      font-size: 14px;
+      color: #e2e8f3;
+      font-weight: 600;
+    }
+    .report-card.ok .v {
+      color: #7ee2a8;
+    }
+    .report-card.error .v {
+      color: #ff9696;
+    }
+    .report-error-box {
+      margin-bottom: 10px;
+      border: 1px solid #734343;
+      border-radius: 6px;
+      background: #3a2525;
+      color: #ffd1d1;
+      padding: 8px 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .report-json-title {
+      font-size: 12px;
+      color: #a8b2c4;
+      margin-bottom: 4px;
+    }
+    .report-json {
+      margin: 0;
+      border: 1px solid #414854;
+      border-radius: 6px;
+      background: #1d2128;
+      color: #d7ddea;
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow: auto;
+      max-height: 320px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+    }
     .preview-table {
       width: 100%;
       border-collapse: collapse;
@@ -465,6 +527,18 @@
       font-size: 12px;
       line-height: 1.4;
     }
+    .schedule-check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .schedule-check-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: #4d9eff;
+      flex: 0 0 auto;
+    }
     .schedule-list-modal-panel {
       width: min(980px, 96vw);
     }
@@ -491,6 +565,11 @@
       padding: 10px;
       display: grid;
       gap: 8px;
+    }
+    .schedule-item.running-active {
+      border-color: #8a7b44;
+      box-shadow: inset 0 0 0 1px rgba(242, 188, 99, 0.28), 0 0 0 1px rgba(242, 188, 99, 0.16);
+      background: linear-gradient(180deg, #2a2f39 0%, #242932 100%);
     }
     .schedule-item-top {
       display: flex;
@@ -597,6 +676,9 @@
     @media (max-width: 640px) {
       .schedule-item-grid {
         grid-template-columns: 1fr;
+      }
+      .report-summary-grid {
+        grid-template-columns: repeat(5, minmax(140px, 1fr));
       }
     }
     .workflow-list {

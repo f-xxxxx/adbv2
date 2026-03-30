@@ -46,6 +46,11 @@ python webapp.py
 - 启动后默认加载 `workflows/example_workflow.json`
 - 右上角“加载工作流”可从 `workflows` 目录选择任意 JSON 工作流
 - 右上角“加载工作流”也支持选择本地 JSON 文件导入
+- 底部面板支持“执行报告”Tab，可视化展示最近执行报告
+
+执行报告策略：
+- 手动执行（非调度）报告固定写入 `outputs/reports/manual_latest.json`（每次覆盖）
+- 调度执行报告按任务 ID 固定命名（每个调度任务覆盖同名报告）
 
 ### 一键启动脚本
 
@@ -120,10 +125,11 @@ python -m src.adbflow.runner --workflow workflows/example_workflow.json --print-
 
 ### PullToPC
 - `save_dir`: 电脑本地保存目录
+- `clear_save_dir`: 是否在回传前清空 `save_dir`（默认 `false`，开启有删除历史文件风险）
 - `stitch_scroll`: 多张图是否自动拼接成长图
 - `max_overlap_px`: 拼接重叠搜索范围
 - `cleanup_remote`: 是否清理手机上的临时截图
-- 每次执行会先清空 `save_dir` 目录中的旧截图，再写入新截图
+- 当 `clear_save_dir=true` 时，会先清空 `save_dir` 目录中的旧截图，再写入新截图
 
 ### EasyOCR
 - `languages`: 例如 `ch_sim,en`
