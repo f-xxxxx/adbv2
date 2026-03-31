@@ -11,6 +11,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, stream
 from routes.api_response import err
 from helpers import _prepare_workflow_export_paths, _write_execution_report
 from webapp_state import (
+    MANUAL_RUN_TIMEOUT_SEC,
     WORKFLOWS_DIR,
     _end_manual_run,
     _try_begin_manual_run,
@@ -20,9 +21,11 @@ from webapp_state import (
 from src.adbflow.adb_client import ADBError
 from src.adbflow.engine import ExecutionResult, WorkflowFormatError
 from src.adbflow.error_codes import ErrorCode
+from src.adbflow.executor import CircuitOpenError, DuplicateExecutionError, ExecutionTimeoutError, QueueBusyError
 from src.adbflow.nodes import NodeExecutionError, WorkflowCancelledError
 from src.adbflow.observability import log_event, new_run_id
 from src.adbflow.persistence import insert_node_event, insert_run
+from src.adbflow.workflow_contract import normalize_workflow, schema_public
 
 workflows_bp = Blueprint("workflows", __name__)
 
@@ -90,7 +93,12 @@ def run_workflow():
     if not workflow:
         _end_manual_run()
         return err("请求体中缺少工作流配置", ErrorCode.BAD_REQUEST, 400)
-    prepared_workflow = _prepare_workflow_export_paths(workflow, trigger="manual")
+    try:
+        normalized_workflow, migration_warnings = normalize_workflow(workflow)
+    except ValueError as exc:
+        _end_manual_run()
+        return err(str(exc), ErrorCode.WORKFLOW_INVALID, 400)
+    prepared_workflow = _prepare_workflow_export_paths(normalized_workflow, trigger="manual")
     run_id = new_run_id("man")
 
     started = time.time()
@@ -111,6 +119,8 @@ def run_workflow():
             cancel_event=cancel_event,
             on_event=on_event,
             trigger="manual",
+            timeout_sec=MANUAL_RUN_TIMEOUT_SEC,
+            dedupe_key="manual:run",
         )
         report_path = _write_execution_report(
             workflow=prepared_workflow,
@@ -134,6 +144,22 @@ def run_workflow():
             error_code=ErrorCode.WORKFLOW_CANCELLED,
         )
         return err(str(exc), ErrorCode.WORKFLOW_CANCELLED, 409, cancelled=True)
+    except (ExecutionTimeoutError, TimeoutError) as exc:
+        _write_execution_report(
+            workflow=prepared_workflow,
+            result=None,
+            started_at=started,
+            trigger="manual",
+            ok=False,
+            error=str(exc),
+            run_id=run_id,
+            error_code=ErrorCode.RUN_TIMEOUT,
+        )
+        return err(str(exc), ErrorCode.RUN_TIMEOUT, 408)
+    except CircuitOpenError as exc:
+        return err(str(exc), ErrorCode.CIRCUIT_OPEN, 429)
+    except (QueueBusyError, DuplicateExecutionError) as exc:
+        return err(str(exc), ErrorCode.DUPLICATE_EXECUTION, 409)
     except (WorkflowFormatError, NodeExecutionError, ADBError, ValueError) as exc:
         _write_execution_report(
             workflow=prepared_workflow,
@@ -161,7 +187,16 @@ def run_workflow():
     finally:
         _end_manual_run()
 
-    return jsonify({"ok": True, "logs": result.logs, "outputs": result.outputs, "report_path": str(report_path)})
+    return jsonify(
+        {
+            "ok": True,
+            "logs": result.logs,
+            "outputs": result.outputs,
+            "report_path": str(report_path),
+            "run_id": run_id,
+            "migration_warnings": migration_warnings,
+        }
+    )
 
 
 @workflows_bp.post("/api/run-stream")
@@ -175,7 +210,12 @@ def run_workflow_stream():
     if not workflow:
         _end_manual_run()
         return err("请求体中缺少工作流配置", ErrorCode.BAD_REQUEST, 400)
-    prepared_workflow = _prepare_workflow_export_paths(workflow, trigger="manual")
+    try:
+        normalized_workflow, migration_warnings = normalize_workflow(workflow)
+    except ValueError as exc:
+        _end_manual_run()
+        return err(str(exc), ErrorCode.WORKFLOW_INVALID, 400)
+    prepared_workflow = _prepare_workflow_export_paths(normalized_workflow, trigger="manual")
     run_id = new_run_id("man")
 
     event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
@@ -207,8 +247,11 @@ def run_workflow_stream():
                 on_event=on_event,
                 cancel_event=cancel_event,
                 trigger="manual",
+                timeout_sec=MANUAL_RUN_TIMEOUT_SEC,
+                dedupe_key="manual:run",
             )
             result_holder["result"] = result
+            result_holder["run_id"] = run_id
             result_holder["report_path"] = str(
                 _write_execution_report(
                     workflow=prepared_workflow,
@@ -220,6 +263,25 @@ def run_workflow_stream():
                     run_id=run_id,
                 )
             )
+        except (ExecutionTimeoutError, TimeoutError) as exc:
+            error_holder["error"] = str(exc)
+            error_holder["error_code"] = ErrorCode.RUN_TIMEOUT
+            _write_execution_report(
+                workflow=prepared_workflow,
+                result=None,
+                started_at=started,
+                trigger="manual",
+                ok=False,
+                error=str(exc),
+                run_id=run_id,
+                error_code=ErrorCode.RUN_TIMEOUT,
+            )
+        except CircuitOpenError as exc:
+            error_holder["error"] = str(exc)
+            error_holder["error_code"] = ErrorCode.CIRCUIT_OPEN
+        except (QueueBusyError, DuplicateExecutionError) as exc:
+            error_holder["error"] = str(exc)
+            error_holder["error_code"] = ErrorCode.DUPLICATE_EXECUTION
         except WorkflowCancelledError as exc:
             error_holder["error"] = str(exc)
             error_holder["error_code"] = ErrorCode.WORKFLOW_CANCELLED
@@ -269,7 +331,10 @@ def run_workflow_stream():
     def generate():
         try:
             while True:
-                item = event_queue.get()
+                try:
+                    item = event_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
                 if item is None:
                     break
                 yield json.dumps(item, ensure_ascii=False) + "\n"
@@ -299,6 +364,8 @@ def run_workflow_stream():
                     "outputs": result.outputs,
                     "logs": result.logs,
                     "report_path": result_holder.get("report_path", ""),
+                    "run_id": result_holder.get("run_id", run_id),
+                    "migration_warnings": migration_warnings,
                 },
                 ensure_ascii=False,
             ) + "\n"
@@ -319,7 +386,18 @@ def default_workflow():
             workflow = json.load(f)
     except Exception as exc:
         return err(f"读取默认工作流失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
-    return jsonify({"ok": True, "workflow": workflow, "path": str(workflow_path.resolve())})
+    try:
+        workflow, migration_warnings = normalize_workflow(workflow)
+    except ValueError as exc:
+        return err(f"默认工作流无效：{exc}", ErrorCode.WORKFLOW_INVALID, 500)
+    return jsonify(
+        {
+            "ok": True,
+            "workflow": workflow,
+            "path": str(workflow_path.resolve()),
+            "migration_warnings": migration_warnings,
+        }
+    )
 
 
 @workflows_bp.get("/api/workflows")
@@ -351,4 +429,34 @@ def load_workflow():
             workflow = json.load(f)
     except Exception as exc:
         return err(f"读取工作流失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
-    return jsonify({"ok": True, "workflow": workflow, "name": safe_name, "path": str(workflow_path)})
+    try:
+        workflow, migration_warnings = normalize_workflow(workflow)
+    except ValueError as exc:
+        return err(f"工作流无效：{exc}", ErrorCode.WORKFLOW_INVALID, 400)
+    return jsonify(
+        {
+            "ok": True,
+            "workflow": workflow,
+            "name": safe_name,
+            "path": str(workflow_path),
+            "migration_warnings": migration_warnings,
+        }
+    )
+
+
+@workflows_bp.get("/api/workflow/schema")
+def workflow_schema():
+    return jsonify({"ok": True, "schema": schema_public()})
+
+
+@workflows_bp.post("/api/workflow/normalize")
+def normalize_workflow_api():
+    payload = request.get_json(silent=True) or {}
+    workflow = payload.get("workflow")
+    if not workflow:
+        return err("请求体中缺少工作流配置", ErrorCode.BAD_REQUEST, 400)
+    try:
+        normalized, warnings = normalize_workflow(workflow)
+    except ValueError as exc:
+        return err(str(exc), ErrorCode.WORKFLOW_INVALID, 400)
+    return jsonify({"ok": True, "workflow": normalized, "migration_warnings": warnings})

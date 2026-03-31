@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import io
 import json
@@ -747,17 +748,31 @@ def _parse_regions(value: Any) -> list[dict[str, Any]]:
     if value is None:
         return []
     if isinstance(value, list):
-        return [dict(v) for v in value]
+        return [dict(v) for v in value if isinstance(v, dict)]
+    if isinstance(value, dict):
+        return [dict(value)]
     text = str(value).strip()
     if not text:
         return []
+    parsed: Any
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise NodeExecutionError(f"识别区域配置格式错误：{exc}") from exc
+        try:
+            # 兼容前端常见输入：单引号、尾逗号、Python 风格布尔/None。
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            raise NodeExecutionError(f"识别区域配置格式错误：{exc}") from exc
+    if isinstance(parsed, dict):
+        parsed = [parsed]
     if not isinstance(parsed, list):
-        raise NodeExecutionError("识别区域配置必须是数组")
-    return [dict(v) for v in parsed]
+        raise NodeExecutionError("识别区域配置必须是数组或对象")
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise NodeExecutionError(f"识别区域第 {idx + 1} 项必须是对象")
+        normalized.append(dict(item))
+    return normalized
 
 
 def _normalize_region(region: dict[str, Any], img_w: int, img_h: int) -> tuple[int, int, int, int]:

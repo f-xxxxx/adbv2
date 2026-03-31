@@ -12,7 +12,7 @@ from pathlib import Path
 from src.adbflow.engine import ExecutionResult
 from src.adbflow.error_codes import ErrorCode
 from src.adbflow.observability import log_event
-from src.adbflow.persistence import finish_run, upsert_report
+from src.adbflow.persistence import finalize_run_and_report, upsert_report
 
 from webapp_state import DOCS_DIR, REPORTS_DIR
 
@@ -55,20 +55,8 @@ def _write_execution_report(
     status = "ok" if ok else ("cancelled" if "取消" in str(error) else "error")
     final_error_code = str(error_code or ("" if ok else ErrorCode.RUN_FAILED))
     try:
-        upsert_report(
-            report_path=str(report_path),
-            run_id=run_id,
-            trigger=trigger,
-            schedule_id=schedule_id,
-            ok=ok,
-            started_at=started_at,
-            ended_at=ended_at,
-            elapsed_sec=float(elapsed_sec),
-            error_code=final_error_code,
-            error_message=error,
-        )
         if run_id:
-            finish_run(
+            finalize_run_and_report(
                 run_id=run_id,
                 status=status,
                 ended_at=ended_at,
@@ -78,6 +66,23 @@ def _write_execution_report(
                 log_count=len(result.logs) if result else 0,
                 output_node_count=len(result.outputs) if result else 0,
                 report_path=str(report_path),
+                trigger=trigger,
+                schedule_id=schedule_id,
+                ok=ok,
+                started_at=started_at,
+            )
+        else:
+            upsert_report(
+                report_path=str(report_path),
+                run_id=run_id,
+                trigger=trigger,
+                schedule_id=schedule_id,
+                ok=ok,
+                started_at=started_at,
+                ended_at=ended_at,
+                elapsed_sec=float(elapsed_sec),
+                error_code=final_error_code,
+                error_message=error,
             )
     except Exception as exc:
         log_event("report_persist_failed", run_id=run_id, schedule_id=schedule_id, error=str(exc))

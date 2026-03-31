@@ -31,7 +31,22 @@ init_db(DB_PATH)
 # ---------------------------------------------------------------------------
 adb = ADBClient()
 engine = WorkflowEngine(adb=adb)
-execution_queue = ExecutionQueue(engine)
+EXEC_DEFAULT_TIMEOUT_SEC = 180.0
+EXEC_DEFAULT_MAX_RETRIES = 1
+EXEC_RETRY_BACKOFF_SEC = 0.8
+EXEC_CIRCUIT_FAIL_THRESHOLD = 3
+EXEC_CIRCUIT_OPEN_SEC = 30.0
+MANUAL_RUN_TIMEOUT_SEC = 180.0
+SCHEDULE_RUN_TIMEOUT_SEC = 300.0
+
+execution_queue = ExecutionQueue(
+    engine,
+    default_timeout_sec=EXEC_DEFAULT_TIMEOUT_SEC,
+    default_max_retries=EXEC_DEFAULT_MAX_RETRIES,
+    retry_backoff_sec=EXEC_RETRY_BACKOFF_SEC,
+    circuit_fail_threshold=EXEC_CIRCUIT_FAIL_THRESHOLD,
+    circuit_open_sec=EXEC_CIRCUIT_OPEN_SEC,
+)
 
 # ---------------------------------------------------------------------------
 # Manual-run concurrency state

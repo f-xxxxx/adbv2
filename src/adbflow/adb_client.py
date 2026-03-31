@@ -20,7 +20,11 @@ class CommandResult:
 
 
 def _run(cmd: list[str], *, text: bool = True, check: bool = True) -> CommandResult:
-    proc = subprocess.run(cmd, capture_output=True, text=text, check=False)
+    timeout_sec = 25.0
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=text, check=False, timeout=timeout_sec)
+    except subprocess.TimeoutExpired as exc:
+        raise ADBError(f"命令执行超时（{timeout_sec}s）：{' '.join(cmd)}") from exc
     result = CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
     if check and proc.returncode != 0:
         raise ADBError(f"命令执行失败：{' '.join(cmd)}\n{result.stderr.strip()}")

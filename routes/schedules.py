@@ -19,6 +19,7 @@ from helpers import (
     _write_execution_report,
 )
 from webapp_state import (
+    SCHEDULE_RUN_TIMEOUT_SEC,
     WORKFLOWS_DIR,
     _MANUAL_RUN_LOCK,
     _MANUAL_RUN_STATE,
@@ -35,6 +36,7 @@ from webapp_state import (
 
 from src.adbflow.engine import ExecutionResult
 from src.adbflow.error_codes import ErrorCode
+from src.adbflow.executor import CircuitOpenError, DuplicateExecutionError, ExecutionTimeoutError, QueueBusyError
 from src.adbflow.observability import log_event, new_run_id
 from src.adbflow.persistence import (
     insert_node_event,
@@ -42,6 +44,7 @@ from src.adbflow.persistence import (
     load_schedules as db_load_schedules,
     replace_schedules as db_replace_schedules,
 )
+from src.adbflow.workflow_contract import normalize_workflow
 
 schedules_bp = Blueprint("schedules", __name__)
 
@@ -94,6 +97,11 @@ def create_schedule():
     else:
         return err("缺少 workflow（当前工作区工作流）", ErrorCode.BAD_REQUEST, 400)
 
+    try:
+        workflow_snapshot, migration_warnings = normalize_workflow(workflow_snapshot)
+    except ValueError as exc:
+        return err(f"工作流无效：{exc}", ErrorCode.WORKFLOW_INVALID, 400)
+
     schedule_id = uuid.uuid4().hex[:10]
     now = time.time()
     if not task_name:
@@ -115,6 +123,7 @@ def create_schedule():
         "last_status": "",
         "last_error": "",
         "last_report_path": "",
+        "last_run_id": "",
     }
     with _SCHEDULER_LOCK:
         if run_now and _is_scheduler_running_locked():
@@ -126,7 +135,7 @@ def create_schedule():
         _save_schedules_locked()
     if run_now:
         _trigger_schedule_run_now(schedule_id)
-    return jsonify({"ok": True, "item": item})
+    return jsonify({"ok": True, "item": item, "migration_warnings": migration_warnings})
 
 
 @schedules_bp.post("/api/schedules/toggle")
@@ -184,6 +193,7 @@ def run_schedule_now():
             item["last_status"] = "running"
             item["last_error"] = ""
             item["last_report_path"] = ""
+            item["last_run_id"] = ""
             _save_schedules_locked()
             result_item = dict(item)
 
@@ -223,6 +233,7 @@ def run_schedule_now_stream():
             item["last_status"] = "running"
             item["last_error"] = ""
             item["last_report_path"] = ""
+            item["last_run_id"] = ""
             item["next_run_at"] = time.time() + interval_sec
             _increment_schedule_running()
             _save_schedules_locked()
@@ -250,8 +261,8 @@ def run_schedule_now_stream():
         )
         event_queue.put({"type": "event", **evt})
 
-    def _run_single_batch(batch_no: int) -> tuple[bool, str, str, ExecutionResult | None, str]:
-        """Run one batch and return (ok, err, result, report_path)."""
+    def _run_single_batch(batch_no: int) -> tuple[bool, str, str, ExecutionResult | None, str, str]:
+        """Run one batch and return (ok, err, err_code, result, report_path, run_id)."""
         b_ok = False
         b_err = ""
         b_err_code = ""
@@ -262,8 +273,9 @@ def run_schedule_now_stream():
 
         if isinstance(workflow_data, dict) and workflow_data:
             try:
+                normalized_workflow, _mw = normalize_workflow(workflow_data)
                 prepared_workflow = _prepare_workflow_export_paths(
-                    workflow_data,
+                    normalized_workflow,
                     trigger="schedule",
                     schedule_id=schedule_id,
                     schedule_batch=batch_no,
@@ -279,6 +291,7 @@ def run_schedule_now_stream():
                 try:
                     with wf_path.open("r", encoding="utf-8") as f:
                         loaded = json.load(f)
+                    loaded, _mw = normalize_workflow(loaded)
                     prepared_workflow = _prepare_workflow_export_paths(
                         loaded,
                         trigger="schedule",
@@ -304,8 +317,19 @@ def run_schedule_now_stream():
                     on_event=lambda evt: on_event(evt, run_id),
                     cancel_event=cancel_event,
                     trigger=f"schedule:{schedule_id}:batch:{batch_no}",
+                    timeout_sec=SCHEDULE_RUN_TIMEOUT_SEC,
+                    dedupe_key=f"schedule:{schedule_id}",
                 )
                 b_ok = True
+            except (ExecutionTimeoutError, TimeoutError) as exc:
+                b_err = str(exc)
+                b_err_code = ErrorCode.RUN_TIMEOUT
+            except CircuitOpenError as exc:
+                b_err = str(exc)
+                b_err_code = ErrorCode.CIRCUIT_OPEN
+            except (QueueBusyError, DuplicateExecutionError) as exc:
+                b_err = str(exc)
+                b_err_code = ErrorCode.DUPLICATE_EXECUTION
             except Exception as exc:  # noqa: BLE001
                 b_err = str(exc)
                 b_err_code = ErrorCode.RUN_FAILED
@@ -330,7 +354,7 @@ def run_schedule_now_stream():
             error=b_err,
             error_code=b_err_code,
         )
-        return b_ok, b_err, b_err_code, b_result, str(rp)
+        return b_ok, b_err, b_err_code, b_result, str(rp), run_id
 
     def worker() -> None:
         total_batches = max(1, max_runs) if max_runs > 0 else 0
@@ -339,6 +363,7 @@ def run_schedule_now_stream():
         last_err_code = ""
         last_result: ExecutionResult | None = None
         last_report = ""
+        last_run_id = ""
         batch_no = 0
         cancelled = False
 
@@ -356,7 +381,7 @@ def run_schedule_now_stream():
                 break
 
             on_log(f"--- 第 {batch_no}/{total_batches or '∞'} 批次开始 ---")
-            last_ok, last_err, last_err_code, last_result, last_report = _run_single_batch(batch_no)
+            last_ok, last_err, last_err_code, last_result, last_report, last_run_id = _run_single_batch(batch_no)
 
             with _SCHEDULER_LOCK:
                 saved_item = _SCHEDULES.get(schedule_id)
@@ -365,6 +390,7 @@ def run_schedule_now_stream():
                     saved_item["run_count"] = batch_no
                     saved_item["last_error"] = last_err
                     saved_item["last_report_path"] = last_report
+                    saved_item["last_run_id"] = last_run_id
                     if not last_ok:
                         saved_item["last_status"] = "error"
                     elif total_batches > 0 and batch_no < total_batches:
@@ -420,6 +446,7 @@ def run_schedule_now_stream():
         elif last_ok and last_result is not None:
             result_holder["result"] = last_result
             result_holder["report_path"] = last_report
+            result_holder["run_id"] = last_run_id
         else:
             error_holder["error"] = last_err or "执行失败"
             error_holder["error_code"] = last_err_code or ErrorCode.RUN_FAILED
@@ -431,7 +458,10 @@ def run_schedule_now_stream():
     def generate():
         try:
             while True:
-                item = event_queue.get()
+                try:
+                    item = event_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
                 if item is None:
                     break
                 yield json.dumps(item, ensure_ascii=False) + "\n"
@@ -455,6 +485,7 @@ def run_schedule_now_stream():
                         "outputs": result.outputs,
                         "logs": result.logs,
                         "report_path": result_holder.get("report_path", ""),
+                        "run_id": result_holder.get("run_id", ""),
                     },
                     ensure_ascii=False,
                 ) + "\n"
@@ -576,7 +607,11 @@ def _load_schedules() -> dict[str, dict[str, object]]:
         item["created_at"] = created_at_val
         workflow_data = item.get("workflow_data")
         if isinstance(workflow_data, dict):
-            item["workflow_data"] = workflow_data
+            try:
+                normalized_wf, _warnings = normalize_workflow(workflow_data)
+            except ValueError:
+                normalized_wf = {}
+            item["workflow_data"] = normalized_wf
         else:
             item["workflow_data"] = {}
         export_dirs = item.get("export_dirs")
@@ -593,6 +628,7 @@ def _load_schedules() -> dict[str, dict[str, object]]:
         item["last_status"] = str(item.get("last_status", ""))
         item["last_error"] = str(item.get("last_error", ""))
         item["last_report_path"] = str(item.get("last_report_path", ""))
+        item["last_run_id"] = str(item.get("last_run_id", ""))
         result[sid_text] = item
     return result
 
@@ -707,6 +743,7 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
             item["next_run_at"] = time.time() + interval_sec
             item["last_status"] = "running"
             item["last_error"] = ""
+            item["last_run_id"] = ""
             if not item.get("export_dirs"):
                 item["export_dirs"] = _collect_schedule_export_dirs(
                     item.get("workflow_data") if isinstance(item.get("workflow_data"), dict) else {},
@@ -723,12 +760,17 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
     result: ExecutionResult | None = None
     workflow: dict[str, object] = {}
     if isinstance(workflow_data, dict) and workflow_data:
-        workflow = _prepare_workflow_export_paths(
-            workflow_data,
-            trigger="schedule",
-            schedule_id=schedule_id,
-            schedule_batch=batch_no,
-        )
+        try:
+            normalized_workflow, _mw = normalize_workflow(workflow_data)
+            workflow = _prepare_workflow_export_paths(
+                normalized_workflow,
+                trigger="schedule",
+                schedule_id=schedule_id,
+                schedule_batch=batch_no,
+            )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            err_code = ErrorCode.WORKFLOW_INVALID
     else:
         workflow_path = (WORKFLOWS_DIR / Path(workflow_name).name).resolve()
         if workflow_path.parent != WORKFLOWS_DIR or not workflow_path.exists():
@@ -737,6 +779,7 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
             try:
                 with workflow_path.open("r", encoding="utf-8") as f:
                     loaded = json.load(f)
+                loaded, _mw = normalize_workflow(loaded)
                 workflow = _prepare_workflow_export_paths(
                     loaded,
                     trigger="schedule",
@@ -767,8 +810,19 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
                     event_ctx=event_ctx,
                 ),
                 trigger=f"schedule:{schedule_id}:batch:{batch_no}",
+                timeout_sec=SCHEDULE_RUN_TIMEOUT_SEC,
+                dedupe_key=f"schedule:{schedule_id}",
             )
             ok = True
+        except (ExecutionTimeoutError, TimeoutError) as exc:
+            err = str(exc)
+            err_code = ErrorCode.RUN_TIMEOUT
+        except CircuitOpenError as exc:
+            err = str(exc)
+            err_code = ErrorCode.CIRCUIT_OPEN
+        except (QueueBusyError, DuplicateExecutionError) as exc:
+            err = str(exc)
+            err_code = ErrorCode.DUPLICATE_EXECUTION
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
             err_code = ErrorCode.RUN_FAILED
@@ -805,6 +859,7 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
         item["run_count"] = next_run_count
         item["last_error"] = err
         item["last_report_path"] = str(report_path)
+        item["last_run_id"] = run_id
         max_runs = max(0, int(item.get("max_runs", 0) or 0))
         if not ok:
             item["last_status"] = "error"

@@ -14,7 +14,7 @@ fi
 source .venv/bin/activate
 
 # 安装依赖（若已安装会很快跳过）
-pip3 install -r requirements.txt -i https://pypi.tuna.tsinghua.cn/simple
+pip3 install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 
 # 可选：显示设备列表，确认 adb 可用
 adb devices

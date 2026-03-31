@@ -8,6 +8,8 @@ from routes.schedules import _ensure_scheduler_started, schedules_bp
 from routes.utils import utils_bp
 from routes.workflows import workflows_bp
 from src.adbflow.observability import setup_logging
+from src.adbflow.tmp_guardian import start_tmp_cleanup_daemon
+from webapp_state import OUTPUTS_DIR
 
 app = Flask(__name__, template_folder="web", static_folder="web")
 app.register_blueprint(workflows_bp)
@@ -30,6 +32,7 @@ def _warmup_ocr() -> None:
 
 _warmup_ocr()
 _ensure_scheduler_started()
+start_tmp_cleanup_daemon(OUTPUTS_DIR / "tmp", interval_sec=600, ttl_sec=3600)
 
 
 if __name__ == "__main__":

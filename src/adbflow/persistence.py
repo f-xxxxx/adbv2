@@ -72,7 +72,13 @@ def init_db(db_path: Path) -> Path:
 
                 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_runs_schedule_id ON runs(schedule_id);
+                CREATE INDEX IF NOT EXISTS idx_runs_schedule_started ON runs(schedule_id, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_runs_report_path ON runs(report_path);
+                CREATE INDEX IF NOT EXISTS idx_reports_run_id ON reports(run_id);
+                CREATE INDEX IF NOT EXISTS idx_reports_schedule_created ON reports(schedule_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_node_events_run_id ON node_events(run_id);
+                CREATE INDEX IF NOT EXISTS idx_node_events_schedule_ts ON node_events(schedule_id, ts);
+                CREATE INDEX IF NOT EXISTS idx_node_events_run_node_event ON node_events(run_id, node_id, event, ts);
                 CREATE INDEX IF NOT EXISTS idx_node_events_class ON node_events(class_type);
                 """
             )
@@ -227,6 +233,85 @@ def upsert_report(
                     str(error_code or ""),
                     str(error_message or ""),
                     created_at,
+                ),
+            )
+            conn.commit()
+
+
+def finalize_run_and_report(
+    *,
+    run_id: str,
+    status: str,
+    ended_at: float,
+    elapsed_sec: float,
+    error_code: str = "",
+    error_message: str = "",
+    log_count: int = 0,
+    output_node_count: int = 0,
+    report_path: str,
+    trigger: str,
+    schedule_id: str = "",
+    ok: bool,
+    started_at: float,
+) -> None:
+    created_at = time.time()
+    with _DB_LOCK:
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO reports(
+                    report_path, run_id, trigger, schedule_id, ok, started_at, ended_at,
+                    elapsed_sec, error_code, error_message, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_path) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    trigger = excluded.trigger,
+                    schedule_id = excluded.schedule_id,
+                    ok = excluded.ok,
+                    started_at = excluded.started_at,
+                    ended_at = excluded.ended_at,
+                    elapsed_sec = excluded.elapsed_sec,
+                    error_code = excluded.error_code,
+                    error_message = excluded.error_message,
+                    created_at = excluded.created_at
+                """,
+                (
+                    str(report_path),
+                    str(run_id or ""),
+                    str(trigger),
+                    str(schedule_id or ""),
+                    1 if ok else 0,
+                    float(started_at),
+                    float(ended_at),
+                    max(0.0, float(elapsed_sec)),
+                    str(error_code or ""),
+                    str(error_message or ""),
+                    created_at,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = ?,
+                    ended_at = ?,
+                    elapsed_sec = ?,
+                    error_code = ?,
+                    error_message = ?,
+                    log_count = ?,
+                    output_node_count = ?,
+                    report_path = ?
+                WHERE run_id = ?
+                """,
+                (
+                    str(status),
+                    float(ended_at),
+                    max(0.0, float(elapsed_sec)),
+                    str(error_code or ""),
+                    str(error_message or ""),
+                    max(0, int(log_count)),
+                    max(0, int(output_node_count)),
+                    str(report_path or ""),
+                    str(run_id),
                 ),
             )
             conn.commit()
@@ -461,5 +546,7 @@ def _require_db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     db_path = _require_db_path()
     conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout=30000;")
     conn.row_factory = sqlite3.Row
     return conn

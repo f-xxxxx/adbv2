@@ -44,6 +44,7 @@ const graph = new LGraph();
     let lastAutoLoadedScheduleReportPath = "";
     let lastAutoLoadedScheduleOutcomeKey = "";
     let currentReportPath = "";
+    let currentRunId = "";
     let currentTimelineRunId = "";
     let timelineItems = [];
     let timelinePlayIndex = -1;
@@ -89,25 +90,42 @@ const graph = new LGraph();
       endY: null
     };
 
-    const CLASS_MAP = {
-      "节点/开始": "StartDevice",
-      "节点/输入": "InputFill",
-      "节点/点击": "Tap",
-      "节点/滑动": "Swipe",
-      "节点/等待": "Wait",
-      "节点/截图": "Screenshot",
-      "节点/循环开始": "LoopStart",
-      "节点/循环结束": "LoopEnd",
-      "节点/回传": "PullToPC",
-      "节点/识别": "EasyOCR",
-      "节点/导出": "ExportExcel",
-      "节点/展示": "PreviewExcel",
-      "节点/图片预览": "PreviewImages"
-    };
-    const CLASS_TO_NODE_MAP = Object.fromEntries(
-      Object.entries(CLASS_MAP).map(([nodeType, classType]) => [classType, nodeType])
-    );
+    const _modules = window.ADBModules || {};
+    const _nodeFactory = _modules.nodeFactory || {};
+    if (typeof _nodeFactory.createMappings !== "function") {
+      throw new Error("node-factory 模块未加载：window.ADBModules.nodeFactory.createMappings 缺失");
+    }
+    const _nodeMappings = _nodeFactory.createMappings();
+    const CLASS_MAP = _nodeMappings.CLASS_MAP || {};
+    const CLASS_TO_NODE_MAP =
+      _nodeMappings.CLASS_TO_NODE_MAP && Object.keys(_nodeMappings.CLASS_TO_NODE_MAP).length
+        ? _nodeMappings.CLASS_TO_NODE_MAP
+        : Object.fromEntries(Object.entries(CLASS_MAP).map(([nodeType, classType]) => [classType, nodeType]));
     const WORKFLOW_SNAPSHOT_KEY = "adbflow:last_workflow:v1";
+
+    const _nodeEditor = _modules.nodeEditor || {};
+    const _nodePanel = _modules.nodePanel || {};
+    const _modalUtils = _modules.modalUtils || {};
+    const _modalControllerModule = _modules.modalController || {};
+    const _ocrRegionEditorModule = _modules.ocrRegionEditor || {};
+    const _dedupKeysEditorModule = _modules.dedupKeysEditor || {};
+    const _pickerEditorModule = _modules.pickerEditor || {};
+    const _runControl = _modules.runControl || {};
+    const _executionState = _modules.executionState || {};
+    const _uiLayout = _modules.uiLayout || {};
+    const _reportReplay = _modules.reportReplay || {};
+    const _reportRuntime = _modules.reportRuntime || {};
+    const _reportController = _modules.reportController || {};
+    const _workflowService = _modules.workflowService || {};
+    const _workflowSchema = _modules.workflowSchema || {};
+    const _reportView = _modules.reportView || {};
+    const _modalController = _modalControllerModule.createController
+      ? _modalControllerModule.createController(_modalUtils)
+      : null;
+    let _ocrRegionEditorController = null;
+    let _dedupKeysEditorController = null;
+    let _pickerEditorController = null;
+    let workflowSchemaMap = {};
 
     function makeIO(node, withInput = true) {
       if (withInput) node.addInput("输入", "数据");
@@ -136,353 +154,29 @@ const graph = new LGraph();
       if (value === "InputText") return "input_text";
       return "auto";
     }
-
-    function StartNode() {
-      this.title = "开始节点";
-      this.properties = { device_id: "" };
-      makeIO(this, false);
-      this.addWidget("combo", "设备编号", this.properties.device_id, (v) => {
-        this.properties.device_id = v || "";
-      }, { values: () => deviceOptions });
-      this.addWidget("button", "刷新设备", "", () => refreshDevices());
-      this.size = [250, 100];
+    if (typeof _nodeFactory.registerBuiltinNodes !== "function") {
+      throw new Error("node-factory 模块未加载：window.ADBModules.nodeFactory.registerBuiltinNodes 缺失");
     }
-
-    function TapNode() {
-      this.title = "点击节点";
-      this.properties = { x: 540, y: 1600 };
-      makeIO(this, true);
-      this.addWidget("number", "横坐标", this.properties.x, (v) => this.properties.x = Number(v));
-      this.addWidget("number", "纵坐标", this.properties.y, (v) => this.properties.y = Number(v));
-      this.addWidget("button", "图片取点", "", () => openTapPicker(this));
-      this.size = [240, 130];
-    }
-
-    function InputNode() {
-      this.title = "输入节点";
-      this.properties = {
-        text_channel: "clipboard",
-        text: "你好，这是一条自动输入内容"
-      };
-      makeIO(this, true);
-      this.addWidget(
-        "combo",
-        "输入通道",
-        inputChannelValueToLabel(this.properties.text_channel),
-        (v) => this.properties.text_channel = inputChannelLabelToValue(v),
-        { values: ["剪贴板", "自动", "ADB Keyboard", "InputText"] }
-      );
-      this.addWidget("text", "输入内容", this.properties.text, (v) => this.properties.text = v);
-      this.size = [340, 130];
-    }
-
-
-    function SwipeNode() {
-      this.title = "滑动节点";
-      this.properties = { direction: "up", duration_ms: 350, distance_px: 420, x: null, y: null };
-      makeIO(this, true);
-      this.addWidget(
-        "combo",
-        "滑动方向",
-        directionValueToLabel(this.properties.direction),
-        (v) => this.properties.direction = directionLabelToValue(v),
-        { values: ["上滑", "下滑"] }
-      );
-      this.addWidget("number", "滑动时长(毫秒)", this.properties.duration_ms, (v) => this.properties.duration_ms = Number(v));
-      this.addWidget("number", "滑动像素", this.properties.distance_px, (v) => this.properties.distance_px = Number(v));
-      this.addWidget("text", "起点X(可选)", this.properties.x == null ? "" : String(this.properties.x), (v) => {
-        const txt = String(v || "").trim();
-        this.properties.x = txt === "" ? null : Number(txt);
-      });
-      this.addWidget("text", "起点Y(可选)", this.properties.y == null ? "" : String(this.properties.y), (v) => {
-        const txt = String(v || "").trim();
-        this.properties.y = txt === "" ? null : Number(txt);
-      });
-      this.addWidget("button", "图片取点(起止)", "", () => openSwipePicker(this));
-      this.size = [280, 200];
-    }
-
-    function WaitNode() {
-      this.title = "等待节点";
-      this.properties = { duration_sec: 0.8 };
-      makeIO(this, true);
-      this.addWidget("number", "等待秒数", this.properties.duration_sec, (v) => this.properties.duration_sec = Number(v));
-      this.size = [220, 90];
-    }
-
-    function ScreenshotNode() {
-      this.title = "截图节点";
-      this.properties = {
-        remote_dir: "/sdcard/adbflow",
-        prefix: "capture"
-      };
-      makeIO(this, true);
-      this.addWidget("text", "手机目录", this.properties.remote_dir, (v) => this.properties.remote_dir = v);
-      this.addWidget("text", "文件名前缀", this.properties.prefix, (v) => this.properties.prefix = v);
-      this.size = [300, 110];
-    }
-
-    function LoopStartNode() {
-      this.title = "循环开始节点";
-      this.properties = {
-        loop_count: 5,
-        loop_start_wait_sec: 0.6
-      };
-      makeIO(this, true);
-      this.addWidget("number", "循环次数", this.properties.loop_count, (v) => this.properties.loop_count = Number(v));
-      this.addWidget("number", "每轮开始等待(秒)", this.properties.loop_start_wait_sec, (v) => this.properties.loop_start_wait_sec = Number(v));
-      this.size = [280, 110];
-    }
-
-    function LoopEndNode() {
-      this.title = "循环结束节点";
-      makeIO(this, true);
-      this.size = [220, 70];
-    }
-
-    function PullNode() {
-      this.title = "回传节点";
-      this.properties = {
-        save_dir: "outputs/screenshots",
-        clear_save_dir: false,
-        cleanup_remote: true
-      };
-      makeIO(this, true);
-      this.addWidget("text", "电脑保存目录", this.properties.save_dir, (v) => this.properties.save_dir = v);
-      this.addWidget("toggle", "执行前清空目录(高风险)", this.properties.clear_save_dir, (v) => {
-        const nextVal = !!v;
-        if (!nextVal) {
-          this.properties.clear_save_dir = false;
-          return;
-        }
-        const yes = window.confirm("开启后将删除保存目录中的历史文件，是否确认开启？");
-        this.properties.clear_save_dir = !!yes;
-        if (!yes) {
-          setStatus("已取消开启“清空目录”");
-        } else {
-          setStatus("风险提示：已开启执行前清空目录");
-        }
-        if (this.widgets && this.widgets[1]) this.widgets[1].value = this.properties.clear_save_dir;
-      });
-      this.addWidget("toggle", "清理手机临时图(建议开启)", this.properties.cleanup_remote, (v) => this.properties.cleanup_remote = !!v);
-      this.size = [320, 140];
-    }
-
-    function OCRNode() {
-      this.title = "文字识别节点";
-      this.properties = {
-        languages: "ch_sim,en",
-        gpu: false,
-        image_dir: "",
-        regions: JSON.stringify(
-          [
-            {"name":"姓名","x":250,"y":870,"w":830,"h":980},
-            {"name":"手机号","x":60,"y":1050,"w":445,"h":1130}
-          ],
-          null,
-          2
-        )
-      };
-      makeIO(this, true);
-      this.addWidget("text", "识别语言", this.properties.languages, (v) => this.properties.languages = v);
-      this.addWidget("toggle", "启用显卡加速", this.properties.gpu, (v) => this.properties.gpu = !!v);
-      this.addWidget("text", "图片文件夹", this.properties.image_dir, (v) => this.properties.image_dir = v);
-      this.addWidget("button", "打开图片文件位置", "", () => openOcrImageLocation(this));
-      this.addWidget("button", "编辑识别区域(多行)", "", () => openRegionsEditor(this));
-      this.__regionsPreviewWidget = this.addWidget("text", "区域摘要", buildRegionsPreview(this.properties.regions), () => {});
-      this.size = [360, 210];
-    }
-
-    function ExcelNode() {
-      this.title = "导出表格节点";
-      this.properties = {
-        output_path: "outputs/docs/ocr_result.xlsx",
-        append_mode: false,
-        dedup_keys: ["图片"]
-      };
-      makeIO(this, true);
-      this.addWidget("text", "导出文件路径", this.properties.output_path, (v) => this.properties.output_path = v);
-      this.addWidget("toggle", "增量导出", this.properties.append_mode, (v) => this.properties.append_mode = !!v);
-      this.addWidget("button", "选择去重键", "", () => openDedupKeysEditor(this));
-      this.__dedupPreviewWidget = this.addWidget("text", "去重键摘要", buildDedupKeysPreview(this.properties.dedup_keys), () => {});
-      this.addWidget("button", "打开文件所在位置", "", () => openExcelOutputLocation(this));
-      this.size = [360, 170];
-    }
-
-    function PreviewNode() {
-      this.title = "展示结果节点";
-      this.properties = { max_rows: 10 };
-      makeIO(this, true);
-      this.addWidget("number", "展示条数", this.properties.max_rows, (v) => this.properties.max_rows = Number(v));
-      this.size = [240, 90];
-    }
-
-    function ImagePreviewNode() {
-      this.title = "图片预览节点";
-      this.properties = {
-        folder_dir: "",
-        max_images: 12
-      };
-      this._previewImages = [];
-      this._previewImage = null;
-      this._previewName = "";
-      this._previewTotal = 0;
-      this._previewLimit = 0;
-      this._previewIndex = -1;
-      this._previewLoadToken = 0;
-      this._previewPanelRect = { x: 8, y: 108, w: 1, h: 1 };
-      this._previewMessage = "执行后在节点内显示图片";
-      makeIO(this, true);
-      this.addWidget("text", "图片文件夹", this.properties.folder_dir, (v) => this.properties.folder_dir = v);
-      this.addWidget("number", "展示张数", this.properties.max_images, (v) => this.properties.max_images = Number(v));
-      this.size = [320, 280];
-
-      this.clearPreview = () => {
-        this._previewImages = [];
-        this._previewImage = null;
-        this._previewName = "";
-        this._previewTotal = 0;
-        this._previewLimit = 0;
-        this._previewIndex = -1;
-        this._previewLoadToken += 1;
-        this._previewMessage = "执行后在节点内显示图片";
-        syncImageLightboxFromNode(this);
-        if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-      };
-
-      this.setPreviewIndex = (index) => {
-        const total = this._previewImages.length;
-        if (!total) {
-          this._previewIndex = -1;
-          this._previewImage = null;
-          this._previewName = "";
-          this._previewMessage = "该目录下没有可预览图片";
-          syncImageLightboxFromNode(this);
-          if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-          return false;
-        }
-
-        let next = Number(index);
-        if (!Number.isFinite(next)) next = 0;
-        next = ((Math.trunc(next) % total) + total) % total;
-        this._previewIndex = next;
-
-        const item = this._previewImages[next] || {};
-        this._previewName = String(item.name || "");
-        this._previewMessage = `共 ${this._previewTotal} 张，显示 ${this._previewImages.length} 张`;
-
-        const src = String(item.data_url || "");
-        if (!src) {
-          this._previewImage = null;
-          this._previewMessage = "图片数据为空";
-          syncImageLightboxFromNode(this);
-          if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-          return false;
-        }
-
-        const token = ++this._previewLoadToken;
-        this._previewImage = null;
-        const img = new Image();
-        img.onload = () => {
-          if (token !== this._previewLoadToken) return;
-          this._previewImage = img;
-          syncImageLightboxFromNode(this);
-          if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-        };
-        img.onerror = () => {
-          if (token !== this._previewLoadToken) return;
-          this._previewImage = null;
-          this._previewMessage = "缩略图加载失败";
-          syncImageLightboxFromNode(this);
-          if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-        };
-        img.src = src;
-        syncImageLightboxFromNode(this);
-        if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-        return true;
-      };
-
-      this.nextPreview = (step = 1) => {
-        if (!this._previewImages.length) return false;
-        return this.setPreviewIndex(this._previewIndex + Number(step || 0));
-      };
-
-      this.setPreviewPayload = (payload) => {
-        const list = Array.isArray(payload && payload.preview_images) ? payload.preview_images : [];
-        this._previewImages = list;
-        this._previewTotal = Number(payload && payload.preview_image_total ? payload.preview_image_total : list.length);
-        this._previewLimit = Number(payload && payload.preview_image_limit ? payload.preview_image_limit : list.length);
-
-        if (!list.length) {
-          this._previewImage = null;
-          this._previewName = "";
-          this._previewIndex = -1;
-          this._previewLoadToken += 1;
-          this._previewMessage = "该目录下没有可预览图片";
-          syncImageLightboxFromNode(this);
-          if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
-          return;
-        }
-
-        this.setPreviewIndex(0);
-      };
-
-      this.onDrawForeground = (ctx) => {
-        const panelX = 8;
-        const panelY = 108;
-        const panelW = Math.max(10, this.size[0] - 16);
-        const panelH = Math.max(10, this.size[1] - 132);
-        this._previewPanelRect = { x: panelX, y: panelY, w: panelW, h: panelH };
-
-        ctx.save();
-        ctx.fillStyle = "#151922";
-        ctx.fillRect(panelX, panelY, panelW, panelH);
-        ctx.strokeStyle = "#3d4452";
-        ctx.strokeRect(panelX, panelY, panelW, panelH);
-
-        if (this._previewImage) {
-          const iw = this._previewImage.width || 1;
-          const ih = this._previewImage.height || 1;
-          const scale = Math.min(panelW / iw, panelH / ih);
-          const dw = iw * scale;
-          const dh = ih * scale;
-          const dx = panelX + (panelW - dw) * 0.5;
-          const dy = panelY + (panelH - dh) * 0.5;
-          ctx.drawImage(this._previewImage, dx, dy, dw, dh);
-        } else {
-          ctx.fillStyle = "#8a93a5";
-          ctx.font = "12px Segoe UI";
-          ctx.fillText(this._previewMessage || "暂无预览", panelX + 10, panelY + 20);
-        }
-
-        ctx.fillStyle = "#c9d1df";
-        ctx.font = "12px Segoe UI";
-        if (this._previewName) {
-          const title = this._previewName.length > 26 ? this._previewName.slice(0, 26) + "..." : this._previewName;
-          ctx.fillText(title, panelX + 6, panelY - 6);
-        }
-        if (this._previewTotal > 0) {
-          const current = this._previewIndex >= 0 ? this._previewIndex + 1 : 0;
-          const txt = `第 ${current} / ${this._previewImages.length} 张（总数 ${this._previewTotal}）`;
-          ctx.fillText(txt, panelX + 6, panelY + panelH + 16);
-        }
-        ctx.restore();
-      };
-    }
-
-    LiteGraph.registerNodeType("节点/开始", StartNode);
-    LiteGraph.registerNodeType("节点/输入", InputNode);
-    LiteGraph.registerNodeType("节点/点击", TapNode);
-    LiteGraph.registerNodeType("节点/滑动", SwipeNode);
-    LiteGraph.registerNodeType("节点/等待", WaitNode);
-    LiteGraph.registerNodeType("节点/截图", ScreenshotNode);
-    LiteGraph.registerNodeType("节点/循环开始", LoopStartNode);
-    LiteGraph.registerNodeType("节点/循环结束", LoopEndNode);
-    LiteGraph.registerNodeType("节点/回传", PullNode);
-    LiteGraph.registerNodeType("节点/识别", OCRNode);
-    LiteGraph.registerNodeType("节点/导出", ExcelNode);
-    LiteGraph.registerNodeType("节点/展示", PreviewNode);
-    LiteGraph.registerNodeType("节点/图片预览", ImagePreviewNode);
+    _nodeFactory.registerBuiltinNodes({
+      LiteGraph,
+      makeIO,
+      directionValueToLabel,
+      directionLabelToValue,
+      inputChannelValueToLabel,
+      inputChannelLabelToValue,
+      getDeviceOptions: () => deviceOptions,
+      refreshDevices,
+      openTapPicker,
+      openSwipePicker,
+      setStatus,
+      openOcrImageLocation,
+      openRegionsEditor,
+      buildRegionsPreview,
+      openDedupKeysEditor,
+      buildDedupKeysPreview,
+      openExcelOutputLocation,
+      syncImageLightboxFromNode,
+    });
 
     function addNodeByType(type, pos = null) {
       const node = LiteGraph.createNode(type);
@@ -506,7 +200,7 @@ const graph = new LGraph();
 
     async function loadDefaultWorkflow() {
       try {
-        if (restoreWorkflowSnapshot()) {
+        if (await restoreWorkflowSnapshot()) {
           setStatus("已恢复上次工作流");
           return;
         }
@@ -520,15 +214,17 @@ const graph = new LGraph();
     }
 
     async function openWorkflowPicker() {
-      const modal = document.getElementById("workflow-picker-modal");
-      modal.classList.remove("hidden");
+      if (_modalController) _modalController.open("workflow-picker-modal");
+      else if (_modalUtils.openModal) _modalUtils.openModal("workflow-picker-modal");
+      else document.getElementById("workflow-picker-modal").classList.remove("hidden");
       setStatus("正在读取 workflows 目录...");
       await refreshWorkflowList();
     }
 
     function closeWorkflowPicker() {
-      const modal = document.getElementById("workflow-picker-modal");
-      modal.classList.add("hidden");
+      if (_modalController) _modalController.close("workflow-picker-modal");
+      else if (_modalUtils.closeModal) _modalUtils.closeModal("workflow-picker-modal");
+      else document.getElementById("workflow-picker-modal").classList.add("hidden");
     }
 
     async function refreshWorkflowList() {
@@ -536,11 +232,17 @@ const graph = new LGraph();
       const dirText = document.getElementById("workflow-dir-text");
       list.innerHTML = '<div class="workflow-empty">正在读取工作流列表...</div>';
       try {
-        const res = await fetch("/api/workflows");
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "读取工作流列表失败");
-        dirText.textContent = `目录：${data.dir || "workflows"}`;
-        renderWorkflowList(Array.isArray(data.files) ? data.files : []);
+        if (_workflowService.listWorkflows) {
+          const data = await _workflowService.listWorkflows();
+          dirText.textContent = `目录：${data.dir || "workflows"}`;
+          renderWorkflowList(Array.isArray(data.files) ? data.files : []);
+        } else {
+          const res = await fetch("/api/workflows");
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || "读取工作流列表失败");
+          dirText.textContent = `目录：${data.dir || "workflows"}`;
+          renderWorkflowList(Array.isArray(data.files) ? data.files : []);
+        }
       } catch (err) {
         list.innerHTML = `<div class="workflow-empty">读取失败：${String(err.message || err)}</div>`;
       }
@@ -578,10 +280,16 @@ const graph = new LGraph();
     }
 
     async function loadWorkflowByApi(apiUrl, displayName, closePicker) {
-      const res = await fetch(apiUrl);
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "加载工作流失败");
+      let data = null;
+      if (_workflowService.loadWorkflowByUrl) {
+        data = await _workflowService.loadWorkflowByUrl(apiUrl);
+      } else {
+        const res = await fetch(apiUrl);
+        data = await res.json();
+        if (!data.ok) throw new Error(data.error || "加载工作流失败");
+      }
       importWorkflowToCanvas(data.workflow || {});
+      notifyWorkflowMigrationWarnings(data.migration_warnings, displayName);
       log(`已加载工作流: ${displayName}`);
       setStatus(`已加载工作流: ${displayName}`);
       if (closePicker) closeWorkflowPicker();
@@ -598,14 +306,16 @@ const graph = new LGraph();
       const file = event.target && event.target.files ? event.target.files[0] : null;
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         try {
           const text = String(reader.result || "");
           const workflow = JSON.parse(text);
           if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
             throw new Error("工作流内容必须是对象格式");
           }
-          importWorkflowToCanvas(workflow);
+          const normalized = await normalizeWorkflowByApi(workflow);
+          importWorkflowToCanvas(normalized.workflow || workflow);
+          notifyWorkflowMigrationWarnings(normalized.migration_warnings, file.name);
           log(`已从本地加载工作流: ${file.name}`);
           setStatus(`已加载本地工作流: ${file.name}`);
           closeWorkflowPicker();
@@ -686,18 +396,132 @@ const graph = new LGraph();
       }
     }
 
-    function restoreWorkflowSnapshot() {
+    async function restoreWorkflowSnapshot() {
       try {
         const text = localStorage.getItem(WORKFLOW_SNAPSHOT_KEY);
         if (!text) return false;
         const payload = JSON.parse(text);
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
         if (!Object.keys(payload).length) return false;
-        importWorkflowToCanvas(payload, false);
+        const normalized = await normalizeWorkflowByApi(payload);
+        importWorkflowToCanvas(normalized.workflow || payload, false);
+        notifyWorkflowMigrationWarnings(normalized.migration_warnings, "本地快照");
         log("已恢复上次工作流快照");
         return true;
       } catch (_err) {
         return false;
+      }
+    }
+
+    async function normalizeWorkflowByApi(workflow) {
+      if (_workflowService.normalizeWorkflow) {
+        return await _workflowService.normalizeWorkflow(workflow);
+      }
+      const res = await fetch("/api/workflow/normalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflow })
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "工作流校验失败");
+      return {
+        workflow: data.workflow || workflow,
+        migration_warnings: Array.isArray(data.migration_warnings) ? data.migration_warnings : []
+      };
+    }
+
+    async function loadWorkflowSchema() {
+      try {
+        if (_workflowService.fetchJson) {
+          const data = await _workflowService.fetchJson("/api/workflow/schema");
+          workflowSchemaMap = data && data.schema && typeof data.schema === "object" ? data.schema : {};
+          return;
+        }
+        const res = await fetch("/api/workflow/schema");
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "读取工作流 schema 失败");
+        workflowSchemaMap = data && data.schema && typeof data.schema === "object" ? data.schema : {};
+      } catch (err) {
+        workflowSchemaMap = {};
+        log("读取工作流 schema 失败，已回退后端校验: " + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    function validateWorkflowBeforeSubmit(workflow) {
+      if (!_workflowSchema.validateAndNormalize || !workflowSchemaMap || !Object.keys(workflowSchemaMap).length) {
+        return { workflow, warnings: [] };
+      }
+      const res = _workflowSchema.validateAndNormalize(workflow, workflowSchemaMap);
+      if (!res.ok) {
+        const msg = Array.isArray(res.errors) && res.errors.length
+          ? res.errors.join("；")
+          : "工作流前端校验失败";
+        throw new Error(msg);
+      }
+      return {
+        workflow: res.workflow || workflow,
+        warnings: Array.isArray(res.warnings) ? res.warnings : [],
+      };
+    }
+
+    function notifyWorkflowMigrationWarnings(warnings, label = "") {
+      const list = Array.isArray(warnings) ? warnings : [];
+      if (!list.length) return;
+      const head = label ? `[${label}] ` : "";
+      log(`${head}工作流已自动迁移 ${list.length} 项`);
+      for (const w of list.slice(0, 12)) {
+        log(`- ${String(w)}`);
+      }
+      if (list.length > 12) {
+        log(`- 其余 ${list.length - 12} 项已省略`);
+      }
+      setStatus(`已自动迁移工作流字段（${list.length}项）`);
+    }
+
+    function ensureNodeEditorControllers() {
+      if (!_ocrRegionEditorController && _ocrRegionEditorModule.createOcrRegionEditor) {
+        _ocrRegionEditorController = _ocrRegionEditorModule.createOcrRegionEditor({
+          regionHelper,
+          markCanvasDirty,
+          setStatus,
+          modalController: _modalController,
+          getCurrentNode: () => currentEditingOcrNode,
+          setCurrentNode: (node) => {
+            currentEditingOcrNode = node;
+          },
+        });
+      }
+      if (!_dedupKeysEditorController && _dedupKeysEditorModule.createDedupKeysEditor) {
+        _dedupKeysEditorController = _dedupKeysEditorModule.createDedupKeysEditor({
+          graph,
+          classMap: CLASS_MAP,
+          markCanvasDirty,
+          setStatus,
+          modalController: _modalController,
+          getCurrentNode: () => currentEditingExportNode,
+          setCurrentNode: (node) => {
+            currentEditingExportNode = node;
+          },
+          parseRegionNamesFromRaw: (raw) => {
+            if (_ocrRegionEditorController && _ocrRegionEditorController.parseRegionNamesFromRaw) {
+              return _ocrRegionEditorController.parseRegionNamesFromRaw(raw);
+            }
+            return [];
+          },
+        });
+      }
+      if (!_pickerEditorController && _pickerEditorModule.createPickerEditor) {
+        _pickerEditorController = _pickerEditorModule.createPickerEditor({
+          graph,
+          classMap: CLASS_MAP,
+          tapPicker,
+          swipePicker,
+          markCanvasDirty,
+          setStatus,
+          log,
+          directionValueToLabel,
+          modalController: _modalController,
+        });
       }
     }
 
@@ -709,6 +533,7 @@ const graph = new LGraph();
     }
 
     function isLinkRef(value) {
+      if (_nodeEditor.isLinkRef) return _nodeEditor.isLinkRef(value);
       return (
         Array.isArray(value) &&
         value.length === 2 &&
@@ -777,17 +602,10 @@ const graph = new LGraph();
       for (const node of nodes) {
         const classType = CLASS_MAP[node.type];
         if (!classType) continue;
-        const inputs = { ...(node.properties || {}) };
-        if (classType === "Swipe") {
-          const xNum = Number(inputs.x);
-          const yNum = Number(inputs.y);
-          if (!Number.isFinite(xNum)) delete inputs.x;
-          else inputs.x = xNum;
-          if (!Number.isFinite(yNum)) delete inputs.y;
-          else inputs.y = yNum;
-        } else if (classType === "EasyOCR") {
-          delete inputs.use_all_images;
-        }
+        const rawInputs = { ...(node.properties || {}) };
+        const inputs = _nodeEditor.normalizeInputsForSerialize
+          ? _nodeEditor.normalizeInputsForSerialize(classType, rawInputs)
+          : rawInputs;
         const inputPort = node.inputs && node.inputs[0];
         if (inputPort && inputPort.link != null) {
           const lk = links.get(inputPort.link);
@@ -869,6 +687,10 @@ const graph = new LGraph();
     }
 
     function updateTopbarActionsState() {
+      if (_nodePanel.updateTopbarActionsState) {
+        _nodePanel.updateTopbarActionsState(workflowRunning, schedulerRunning);
+        return;
+      }
       const bar = document.querySelector(".bar-actions");
       if (!bar) return;
       const locked = workflowRunning || schedulerRunning;
@@ -883,6 +705,15 @@ const graph = new LGraph();
     }
 
     function updateRunButtonState() {
+      if (_nodePanel.updateRunButtonState) {
+        _nodePanel.updateRunButtonState({
+          workflowRunning,
+          schedulerRunning,
+          executionProgress,
+          updateTopbarActions: updateTopbarActionsState,
+        });
+        return;
+      }
       const btn = document.getElementById("run-workflow-btn");
       if (!btn) return;
       const hasProgress = executionProgress.active && executionProgress.total > 0;
@@ -905,18 +736,24 @@ const graph = new LGraph();
 
     function startExecutionProgress(workflow) {
       const total = workflow && typeof workflow === "object" ? Object.keys(workflow).length : 0;
-      executionProgress.active = true;
-      executionProgress.total = Number.isFinite(total) ? Math.max(0, total) : 0;
-      executionProgress.doneSet = new Set();
-      executionProgress.currentNodeId = null;
+      if (_executionState.startProgress) _executionState.startProgress(executionProgress, total);
+      else {
+        executionProgress.active = true;
+        executionProgress.total = Number.isFinite(total) ? Math.max(0, total) : 0;
+        executionProgress.doneSet = new Set();
+        executionProgress.currentNodeId = null;
+      }
       updateRunButtonState();
     }
 
     function stopExecutionProgress() {
-      executionProgress.active = false;
-      executionProgress.total = 0;
-      executionProgress.doneSet = new Set();
-      executionProgress.currentNodeId = null;
+      if (_executionState.stopProgress) _executionState.stopProgress(executionProgress);
+      else {
+        executionProgress.active = false;
+        executionProgress.total = 0;
+        executionProgress.doneSet = new Set();
+        executionProgress.currentNodeId = null;
+      }
       updateRunButtonState();
     }
 
@@ -957,6 +794,10 @@ const graph = new LGraph();
     }
 
     function resetNodeProgressHighlight() {
+      if (_executionState.resetNodeHighlight) {
+        _executionState.resetNodeHighlight(graph, markCanvasDirty);
+        return;
+      }
       const nodes = graph && graph._nodes ? graph._nodes : [];
       for (const node of nodes) {
         if (!node) continue;
@@ -975,6 +816,10 @@ const graph = new LGraph();
     }
 
     function setNodeProgressState(nodeId, state) {
+      if (_executionState.setNodeProgressState) {
+        _executionState.setNodeProgressState(graph, nodeId, state, markCanvasDirty);
+        return;
+      }
       const id = Number(nodeId);
       if (!Number.isFinite(id)) return;
       const node = graph.getNodeById(id);
@@ -1010,6 +855,16 @@ const graph = new LGraph();
     }
 
     function handleRunEventMessage(msg) {
+      if (_executionState.handleRunEvent) {
+        _executionState.handleRunEvent(executionProgress, graph, msg, {
+          onStatus: setStatus,
+          onChange: updateRunButtonState,
+          onScheduleRefresh: renderScheduleList,
+          markCanvasDirty,
+          isScheduleActive: () => !!activeScheduleRunId,
+        });
+        return;
+      }
       const eventName = String(msg.event || "");
       const nodeId = msg.node_id;
       if (nodeId == null) return;
@@ -1067,65 +922,18 @@ const graph = new LGraph();
         return {
           outputs: fallbackData.outputs || {},
           logs: fallbackData.logs || [],
-          report_path: fallbackData.report_path || ""
+          report_path: fallbackData.report_path || "",
+          run_id: fallbackData.run_id || "",
+          migration_warnings: Array.isArray(fallbackData.migration_warnings) ? fallbackData.migration_warnings : []
         };
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let finalResult = null;
-
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          let nl = buffer.indexOf("\n");
-          while (nl >= 0) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (line) {
-              const msg = JSON.parse(line);
-              if (msg.type === "log") {
-                log(String(msg.line || ""));
-              } else if (msg.type === "event") {
-                handleRunEventMessage(msg);
-              } else if (msg.type === "error") {
-                throw new Error(String(msg.error || "执行失败"));
-              } else if (msg.type === "result") {
-                finalResult = {
-                  outputs: msg.outputs || {},
-                  logs: msg.logs || [],
-                  report_path: msg.report_path || ""
-                };
-              }
-            }
-            nl = buffer.indexOf("\n");
-          }
-        }
-
-        const tail = buffer.trim();
-        if (tail) {
-          const msg = JSON.parse(tail);
-          if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
-          if (msg.type === "result") {
-            finalResult = {
-              outputs: msg.outputs || {},
-              logs: msg.logs || [],
-              report_path: msg.report_path || ""
-            };
-          }
-        }
-
-        if (!finalResult) {
-          throw new Error("执行流未返回结果");
-        }
-        return finalResult;
-      } finally {
-        try { await reader.cancel(); } catch (_) {}
+      if (_runControl.parseNdjsonStream) {
+        return await _runControl.parseNdjsonStream(res, {
+          onLog: (line) => log(line),
+          onEvent: (evt) => handleRunEventMessage(evt),
+        });
       }
+      throw new Error("运行模块未加载");
     }
 
     async function runWorkflow() {
@@ -1138,10 +946,21 @@ const graph = new LGraph();
         return;
       }
       const runStartedAt = performance.now();
-      const workflow = serializeWorkflow();
-      if (!Object.keys(workflow).length) {
+      const workflowRaw = serializeWorkflow();
+      if (!Object.keys(workflowRaw).length) {
         log("没有可执行节点");
         setStatus("没有可执行节点");
+        return;
+      }
+      let workflow = workflowRaw;
+      try {
+        const check = validateWorkflowBeforeSubmit(workflowRaw);
+        workflow = check.workflow || workflowRaw;
+        notifyWorkflowMigrationWarnings(check.warnings, "前端校验");
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log("执行前校验失败: " + msg);
+        setStatus("执行前校验失败");
         return;
       }
       log("开始执行工作流...");
@@ -1157,13 +976,15 @@ const graph = new LGraph();
       startExecutionProgress(workflow);
       try {
         const data = await runWorkflowStream(workflow);
+        notifyWorkflowMigrationWarnings(data.migration_warnings, "执行前校验");
         const elapsedSec = ((performance.now() - runStartedAt) / 1000).toFixed(2);
         log("执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
         log(`执行耗时: ${elapsedSec} 秒`);
         if (data.report_path) {
           log(`执行报告: ${data.report_path}`);
+          currentRunId = String(data.run_id || "");
           currentReportPath = String(data.report_path || "");
-          await openReportInBottomTab(currentReportPath, "手动执行报告");
+          await openReportInBottomTab(currentReportPath, "手动执行报告", currentRunId);
         }
         applyPreviewImagesToNodes(data.outputs || {});
         renderPreviewTable(data.outputs || {});
@@ -1185,12 +1006,14 @@ const graph = new LGraph();
           clearPreviewTable("结果预览：执行失败");
           setStatus("执行失败");
         }
+        currentRunId = "";
         currentReportPath = "outputs/reports/manual_latest.json";
         await openReportInBottomTab(currentReportPath, "手动执行报告");
       } finally {
         cancelRequestedByUser = false;
         workflowRunning = false;
         stopExecutionProgress();
+        resetNodeProgressHighlight();
         await refreshRuntimeStatus(true);
         updateRunButtonState();
       }
@@ -1212,9 +1035,20 @@ const graph = new LGraph();
     }
 
     function openScheduleModal() {
-      const workflow = serializeWorkflow();
-      if (!Object.keys(workflow).length) {
+      const workflowRaw = serializeWorkflow();
+      if (!Object.keys(workflowRaw).length) {
         setStatus("画布为空，无法创建调度");
+        return;
+      }
+      let workflow = workflowRaw;
+      try {
+        const check = validateWorkflowBeforeSubmit(workflowRaw);
+        workflow = check.workflow || workflowRaw;
+        notifyWorkflowMigrationWarnings(check.warnings, "前端校验");
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        setStatus("创建调度前校验失败");
+        log("创建调度前校验失败: " + msg);
         return;
       }
       const nameInput = document.getElementById("schedule-name-input");
@@ -1225,14 +1059,20 @@ const graph = new LGraph();
       if (intervalInput) intervalInput.value = "300";
       if (maxRunsInput) maxRunsInput.value = "0";
       if (runNowInput) runNowInput.checked = false;
-      const modal = document.getElementById("schedule-modal");
-      if (modal) modal.classList.remove("hidden");
+      if (_modalController) _modalController.open("schedule-modal");
+      else {
+        const modal = document.getElementById("schedule-modal");
+        if (modal) modal.classList.remove("hidden");
+      }
       setStatus("请设置调度间隔和执行批次");
     }
 
     function closeScheduleModal() {
-      const modal = document.getElementById("schedule-modal");
-      if (modal) modal.classList.add("hidden");
+      if (_modalController) _modalController.close("schedule-modal");
+      else {
+        const modal = document.getElementById("schedule-modal");
+        if (modal) modal.classList.add("hidden");
+      }
     }
 
     function createScheduleTask() {
@@ -1279,6 +1119,7 @@ const graph = new LGraph();
         });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "创建调度失败");
+        notifyWorkflowMigrationWarnings(data.migration_warnings, "创建调度");
         const planText = Number(data.item.max_runs || 0) > 0 ? `${data.item.max_runs} 批` : "无限次";
         log(`调度已创建: ${data.item.task_name || data.item.id} (${data.item.workflow_name || "工作区工作流"}) 每 ${data.item.interval_sec}s，批次=${planText}${runNow ? "，立即执行=是" : ""}`);
         setStatus(runNow ? "任务调度已创建并立即执行" : "任务调度已创建");
@@ -1303,8 +1144,11 @@ const graph = new LGraph();
     }
 
     function openScheduleListModal() {
-      const modal = document.getElementById("schedule-list-modal");
-      if (modal) modal.classList.remove("hidden");
+      if (_modalController) _modalController.open("schedule-list-modal");
+      else {
+        const modal = document.getElementById("schedule-list-modal");
+        if (modal) modal.classList.remove("hidden");
+      }
       if (scheduleListState.autoRefreshTimer) clearInterval(scheduleListState.autoRefreshTimer);
       scheduleListState.autoRefreshTimer = setInterval(() => {
         const listModal = document.getElementById("schedule-list-modal");
@@ -1315,8 +1159,11 @@ const graph = new LGraph();
     }
 
     function closeScheduleListModal() {
-      const modal = document.getElementById("schedule-list-modal");
-      if (modal) modal.classList.add("hidden");
+      if (_modalController) _modalController.close("schedule-list-modal");
+      else {
+        const modal = document.getElementById("schedule-list-modal");
+        if (modal) modal.classList.add("hidden");
+      }
       if (scheduleListState.autoRefreshTimer) {
         clearInterval(scheduleListState.autoRefreshTimer);
         scheduleListState.autoRefreshTimer = null;
@@ -1359,8 +1206,10 @@ const graph = new LGraph();
       if (!item) return "";
       const scheduleId = String(item.id || "").trim();
       const reportPath = String(item.last_report_path || "").trim();
+      const runId = String(item.last_run_id || "").trim();
       const lastRunAt = Number(item.last_run_at || 0);
       if (!scheduleId || !reportPath || !Number.isFinite(lastRunAt) || lastRunAt <= 0) return "";
+      if (runId) return `${scheduleId}|${runId}`;
       return `${scheduleId}|${lastRunAt}|${reportPath}`;
     }
 
@@ -1423,11 +1272,12 @@ const graph = new LGraph();
         });
         if (latestDone && allowAutoLoadScheduleOutcome) {
           const latestPath = String(latestDone.last_report_path || "").trim();
+          const latestRunId = String(latestDone.last_run_id || "").trim();
           const latestKey = buildScheduleOutcomeKey(latestDone);
           if (latestPath && latestKey && latestKey !== lastAutoLoadedScheduleOutcomeKey) {
             lastAutoLoadedScheduleOutcomeKey = latestKey;
             lastAutoLoadedScheduleReportPath = latestPath;
-            await openReportInBottomTab(latestPath, "调度执行报告");
+            await openReportInBottomTab(latestPath, "调度执行报告", latestRunId);
           }
         }
         await refreshRuntimeStatus(true);
@@ -1456,11 +1306,12 @@ const graph = new LGraph();
         });
         if (!latest) return;
         const latestPath = String(latest.last_report_path || "").trim();
+        const latestRunId = String(latest.last_run_id || "").trim();
         const latestKey = buildScheduleOutcomeKey(latest);
         if (!latestPath || !latestKey || latestKey === lastAutoLoadedScheduleOutcomeKey) return;
         lastAutoLoadedScheduleOutcomeKey = latestKey;
         lastAutoLoadedScheduleReportPath = latestPath;
-        await openReportInBottomTab(latestPath, "调度执行报告");
+        await openReportInBottomTab(latestPath, "调度执行报告", latestRunId);
       } catch (err) {
         if (!silent) {
           log("刷新调度执行结果失败: " + err.message);
@@ -1568,7 +1419,10 @@ const graph = new LGraph();
         reportBtn.textContent = "执行报告";
         reportBtn.disabled = !item.last_report_path;
         reportBtn.addEventListener("click", async () => {
-          await openScheduleReport(String(item.last_report_path || ""));
+          await openScheduleReport(
+            String(item.last_report_path || ""),
+            String(item.last_run_id || "")
+          );
         });
         actions.appendChild(reportBtn);
 
@@ -1635,6 +1489,7 @@ const graph = new LGraph();
           scheduleItem.last_status = "running";
           scheduleItem.last_error = "";
           scheduleItem.last_report_path = "";
+          scheduleItem.last_run_id = "";
           renderScheduleList();
         }
         schedulerRunning = true;
@@ -1648,8 +1503,9 @@ const graph = new LGraph();
         log("调度执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
         if (data.report_path) {
           log(`调度执行报告: ${data.report_path}`);
+          currentRunId = String(data.run_id || "");
           currentReportPath = String(data.report_path || "");
-          await openReportInBottomTab(currentReportPath, "调度执行报告");
+          await openReportInBottomTab(currentReportPath, "调度执行报告", currentRunId);
         }
         applyPreviewImagesToNodes(data.outputs || {});
         renderPreviewTable(data.outputs || {});
@@ -1673,6 +1529,7 @@ const graph = new LGraph();
       } finally {
         activeScheduleRunId = "";
         stopExecutionProgress();
+        resetNodeProgressHighlight();
       }
     }
 
@@ -1698,61 +1555,13 @@ const graph = new LGraph();
         throw new Error("浏览器不支持流式执行");
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let finalResult = null;
-
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          let nl = buffer.indexOf("\n");
-          while (nl >= 0) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (line) {
-              const msg = JSON.parse(line);
-              if (msg.type === "log") {
-                log(String(msg.line || ""));
-              } else if (msg.type === "event") {
-                handleRunEventMessage(msg);
-              } else if (msg.type === "error") {
-                throw new Error(String(msg.error || "执行失败"));
-              } else if (msg.type === "result") {
-                finalResult = {
-                  outputs: msg.outputs || {},
-                  logs: msg.logs || [],
-                  report_path: msg.report_path || ""
-                };
-              }
-            }
-            nl = buffer.indexOf("\n");
-          }
-        }
-
-        const tail = buffer.trim();
-        if (tail) {
-          const msg = JSON.parse(tail);
-          if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
-          if (msg.type === "result") {
-            finalResult = {
-              outputs: msg.outputs || {},
-              logs: msg.logs || [],
-              report_path: msg.report_path || ""
-            };
-          }
-        }
-
-        if (!finalResult) {
-          throw new Error("执行流未返回结果");
-        }
-        return finalResult;
-      } finally {
-        try { await reader.cancel(); } catch (_) {}
+      if (_runControl.parseNdjsonStream) {
+        return await _runControl.parseNdjsonStream(res, {
+          onLog: (line) => log(line),
+          onEvent: (evt) => handleRunEventMessage(evt),
+        });
       }
+      throw new Error("运行模块未加载");
     }
 
     async function deleteScheduleItem(scheduleId) {
@@ -1787,17 +1596,20 @@ const graph = new LGraph();
       }
     }
 
-    async function openScheduleReport(path) {
+    async function openScheduleReport(path, runId = "") {
       if (!path) return;
       currentScheduleReportPath = String(path || "");
-      await openReportInBottomTab(path, "调度执行报告");
+      await openReportInBottomTab(path, "调度执行报告", String(runId || ""));
       setStatus("已打开调度执行报告");
     }
 
     function closeScheduleReportModal() {
       currentScheduleReportPath = "";
-      const modal = document.getElementById("schedule-report-modal");
-      if (modal) modal.classList.add("hidden");
+      if (_modalController) _modalController.close("schedule-report-modal");
+      else {
+        const modal = document.getElementById("schedule-report-modal");
+        if (modal) modal.classList.add("hidden");
+      }
     }
 
     async function openCurrentScheduleReportLocation() {
@@ -1810,7 +1622,7 @@ const graph = new LGraph();
 
     function showReportTab() {
       if (currentReportPath) {
-        openReportInBottomTab(currentReportPath, "执行报告");
+        openReportInBottomTab(currentReportPath, "执行报告", currentRunId);
       } else {
         openReportInBottomTab("outputs/reports/manual_latest.json", "执行报告");
       }
@@ -1842,6 +1654,21 @@ const graph = new LGraph();
     }
 
     function toggleSidebar() {
+      if (_uiLayout.toggleSidebarLayout) {
+        sidebarCollapsed = _uiLayout.toggleSidebarLayout({
+          sidebarCollapsed,
+          layoutEl: document.getElementById("layout"),
+          buttonEl: document.getElementById("toggle-sidebar-btn"),
+          onStatus: setStatus,
+          onAfterToggle: () => {
+            setTimeout(() => {
+              canvas.resize();
+              fitToView(true);
+            }, 50);
+          },
+        });
+        return;
+      }
       sidebarCollapsed = !sidebarCollapsed;
       const layout = document.getElementById("layout");
       const btn = document.getElementById("toggle-sidebar-btn");
@@ -1857,6 +1684,25 @@ const graph = new LGraph();
     }
 
     function toggleBottomPanel() {
+      if (_uiLayout.toggleBottomLayout) {
+        bottomCollapsed = _uiLayout.toggleBottomLayout({
+          bottomCollapsed,
+          workspaceEl: document.getElementById("workspace"),
+          logPanelEl: document.getElementById("log-panel"),
+          buttonEl: document.getElementById("toggle-bottom-btn"),
+          onStatus: setStatus,
+          onAfterToggle: () => {
+            setTimeout(() => {
+              canvas.resize();
+              fitToView(true);
+              if (!bottomCollapsed && activeBottomTab === "logs") {
+                scrollLogsToLatest(true);
+              }
+            }, 50);
+          },
+        });
+        return;
+      }
       bottomCollapsed = !bottomCollapsed;
       const workspace = document.getElementById("workspace");
       const logPanel = document.getElementById("log-panel");
@@ -1877,6 +1723,13 @@ const graph = new LGraph();
     }
 
     function switchBottomTab(tab) {
+      if (_nodePanel.switchBottomTab) {
+        activeBottomTab = _nodePanel.switchBottomTab(tab, activeBottomTab, {
+          onStatus: setStatus,
+          onLogsVisible: () => scrollLogsToLatest(true),
+        });
+        return;
+      }
       if (tab === "preview") activeBottomTab = "preview";
       else if (tab === "report") activeBottomTab = "report";
       else if (tab === "timeline") activeBottomTab = "timeline";
@@ -1914,6 +1767,10 @@ const graph = new LGraph();
     }
 
     function normalizeRegionsText(value) {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.normalizeRegionsText) {
+        return _ocrRegionEditorController.normalizeRegionsText(value);
+      }
       if (typeof value === "string") return value;
       try {
         return JSON.stringify(value || [], null, 2);
@@ -1922,7 +1779,26 @@ const graph = new LGraph();
       }
     }
 
+    function parseFlexibleRegionsJson(text) {
+      const raw = String(text || "").trim();
+      if (!raw) return [];
+      try {
+        return JSON.parse(raw);
+      } catch (_jsonErr) {
+        const normalized = raw
+          .replace(/，/g, ",")
+          .replace(/：/g, ":")
+          .replace(/'/g, "\"")
+          .replace(/,\s*([}\]])/g, "$1");
+        return JSON.parse(normalized);
+      }
+    }
+
     function buildRegionsPreview(value) {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.buildRegionsPreview) {
+        return _ocrRegionEditorController.buildRegionsPreview(value);
+      }
       const raw = normalizeRegionsText(value).trim();
       if (!raw) return "未配置";
       const lines = raw.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
@@ -1932,12 +1808,21 @@ const graph = new LGraph();
     }
 
     function syncOcrRegionsPreview(node) {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.syncOcrRegionsPreview) {
+        _ocrRegionEditorController.syncOcrRegionsPreview(node);
+        return;
+      }
       if (!node || !node.__regionsPreviewWidget) return;
       node.__regionsPreviewWidget.value = buildRegionsPreview(node.properties.regions);
       markCanvasDirty();
     }
 
     function normalizeDedupKeysValue(value) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.normalizeDedupKeysValue) {
+        return _dedupKeysEditorController.normalizeDedupKeysValue(value);
+      }
       if (Array.isArray(value)) {
         const arr = value.map((x) => String(x || "").trim()).filter(Boolean);
         return arr.length ? Array.from(new Set(arr)) : ["图片"];
@@ -1950,6 +1835,10 @@ const graph = new LGraph();
     }
 
     function buildDedupKeysPreview(value) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.buildDedupKeysPreview) {
+        return _dedupKeysEditorController.buildDedupKeysPreview(value);
+      }
       const keys = normalizeDedupKeysValue(value);
       const text = keys.join(", ");
       if (text.length <= 30) return text;
@@ -1957,6 +1846,11 @@ const graph = new LGraph();
     }
 
     function syncExportDedupPreview(node) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.syncExportDedupPreview) {
+        _dedupKeysEditorController.syncExportDedupPreview(node);
+        return;
+      }
       if (!node) return;
       node.properties.dedup_keys = normalizeDedupKeysValue(node.properties.dedup_keys);
       if (!node.__dedupPreviewWidget) return;
@@ -1966,6 +1860,10 @@ const graph = new LGraph();
 
     function parseRegionNamesFromNode(node) {
       if (!node || CLASS_MAP[node.type] !== "EasyOCR") return [];
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.parseRegionNamesFromRaw) {
+        return _ocrRegionEditorController.parseRegionNamesFromRaw(node.properties ? node.properties.regions : "");
+      }
       const raw = node.properties ? node.properties.regions : "";
       let parsed = [];
       if (Array.isArray(raw)) {
@@ -2043,6 +1941,11 @@ const graph = new LGraph();
     }
 
     function openDedupKeysEditor(node) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.openEditor) {
+        _dedupKeysEditorController.openEditor(node);
+        return;
+      }
       currentEditingExportNode = node;
       const modal = document.getElementById("dedup-keys-modal");
       const listEl = document.getElementById("dedup-keys-list");
@@ -2067,12 +1970,22 @@ const graph = new LGraph();
     }
 
     function closeDedupKeysEditor() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.closeEditor) {
+        _dedupKeysEditorController.closeEditor();
+        return;
+      }
       currentEditingExportNode = null;
       const modal = document.getElementById("dedup-keys-modal");
       if (modal) modal.classList.add("hidden");
     }
 
     function selectAllDedupKeys() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.selectAll) {
+        _dedupKeysEditorController.selectAll();
+        return;
+      }
       const listEl = document.getElementById("dedup-keys-list");
       if (!listEl) return;
       listEl.querySelectorAll("input[type=checkbox]").forEach((el) => {
@@ -2081,6 +1994,11 @@ const graph = new LGraph();
     }
 
     function clearDedupKeysSelection() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.clearSelection) {
+        _dedupKeysEditorController.clearSelection();
+        return;
+      }
       const listEl = document.getElementById("dedup-keys-list");
       if (!listEl) return;
       listEl.querySelectorAll("input[type=checkbox]").forEach((el) => {
@@ -2089,6 +2007,11 @@ const graph = new LGraph();
     }
 
     function saveDedupKeysEditor() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.saveEditor) {
+        _dedupKeysEditorController.saveEditor();
+        return;
+      }
       if (!currentEditingExportNode) {
         closeDedupKeysEditor();
         return;
@@ -2109,6 +2032,11 @@ const graph = new LGraph();
     }
 
     function openRegionsEditor(node) {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.openEditor) {
+        _ocrRegionEditorController.openEditor(node);
+        return;
+      }
       currentEditingOcrNode = node;
       const modal = document.getElementById("regions-modal");
       const textarea = document.getElementById("regions-textarea");
@@ -2118,6 +2046,11 @@ const graph = new LGraph();
     }
 
     function closeRegionsEditor() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.closeEditor) {
+        _ocrRegionEditorController.closeEditor();
+        return;
+      }
       closeRegionHelper();
       currentEditingOcrNode = null;
       const modal = document.getElementById("regions-modal");
@@ -2125,6 +2058,11 @@ const graph = new LGraph();
     }
 
     function formatRegionsEditor() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.formatEditor) {
+        _ocrRegionEditorController.formatEditor();
+        return;
+      }
       const textarea = document.getElementById("regions-textarea");
       const text = String(textarea.value || "").trim();
       if (!text) {
@@ -2132,7 +2070,7 @@ const graph = new LGraph();
         return;
       }
       try {
-        const parsed = JSON.parse(text);
+        const parsed = parseFlexibleRegionsJson(text);
         textarea.value = JSON.stringify(parsed, null, 2);
         setStatus("识别区域配置已格式化");
       } catch (_err) {
@@ -2141,6 +2079,11 @@ const graph = new LGraph();
     }
 
     function saveRegionsEditor() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.saveEditor) {
+        _ocrRegionEditorController.saveEditor();
+        return;
+      }
       if (!currentEditingOcrNode) {
         closeRegionsEditor();
         return;
@@ -2171,6 +2114,11 @@ const graph = new LGraph();
     }
 
     function openRegionHelper() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.openHelper) {
+        _ocrRegionEditorController.openHelper();
+        return;
+      }
       ensureRegionHelperReady();
       const modal = document.getElementById("region-helper-modal");
       const textarea = document.getElementById("regions-textarea");
@@ -2184,6 +2132,11 @@ const graph = new LGraph();
     }
 
     function closeRegionHelper() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.closeHelper) {
+        _ocrRegionEditorController.closeHelper();
+        return;
+      }
       const modal = document.getElementById("region-helper-modal");
       modal.classList.add("hidden");
       regionHelper.drawing = false;
@@ -2405,6 +2358,11 @@ const graph = new LGraph();
     }
 
     function clearRegionHelperRects() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.clearHelperRects) {
+        _ocrRegionEditorController.clearHelperRects();
+        return;
+      }
       regionHelper.rects = [];
       regionHelper.activeIndex = -1;
       renderRegionHelperList();
@@ -2413,6 +2371,11 @@ const graph = new LGraph();
     }
 
     function applyRegionHelperToEditor() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.applyHelperToEditor) {
+        _ocrRegionEditorController.applyHelperToEditor();
+        return;
+      }
       const textarea = document.getElementById("regions-textarea");
       if (!textarea) return;
       const payload = regionHelper.rects.map((rect, idx) => ({
@@ -2430,7 +2393,7 @@ const graph = new LGraph();
     function parseRegionsFromText(text) {
       if (!text || !String(text).trim()) return [];
       try {
-        const parsed = JSON.parse(String(text));
+        const parsed = parseFlexibleRegionsJson(String(text));
         if (!Array.isArray(parsed)) return [];
         const result = [];
         for (let i = 0; i < parsed.length; i++) {
@@ -2482,6 +2445,11 @@ const graph = new LGraph();
     }
 
     function openTapPicker(node) {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.openTapPicker) {
+        _pickerEditorController.openTapPicker(node);
+        return;
+      }
       ensureTapPickerReady();
       tapPicker.node = node || null;
       tapPicker.image = null;
@@ -2510,6 +2478,11 @@ const graph = new LGraph();
     }
 
     async function closeTapPicker() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.closeTapPicker) {
+        await _pickerEditorController.closeTapPicker();
+        return;
+      }
       await cleanupTapPickerCapturedImage();
       tapPicker.image = null;
       tapPicker.imageName = "";
@@ -2562,6 +2535,11 @@ const graph = new LGraph();
     }
 
     async function captureTapPickerScreen() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.captureTapPickerScreen) {
+        await _pickerEditorController.captureTapPickerScreen();
+        return;
+      }
       try {
         setStatus("正在捕捉手机屏幕...");
         const deviceId = findPreferredTapPickerDeviceId();
@@ -2719,6 +2697,11 @@ const graph = new LGraph();
     }
 
     function applyTapPickerPoint() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.applyTapPickerPoint) {
+        _pickerEditorController.applyTapPickerPoint();
+        return;
+      }
       if (!tapPicker.node) {
         closeTapPicker();
         return;
@@ -2753,6 +2736,11 @@ const graph = new LGraph();
     }
 
     function openSwipePicker(node) {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.openSwipePicker) {
+        _pickerEditorController.openSwipePicker(node);
+        return;
+      }
       ensureSwipePickerReady();
       swipePicker.node = node || null;
       swipePicker.image = null;
@@ -2776,6 +2764,11 @@ const graph = new LGraph();
     }
 
     async function closeSwipePicker() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.closeSwipePicker) {
+        await _pickerEditorController.closeSwipePicker();
+        return;
+      }
       await cleanupSwipePickerCapturedImage();
       swipePicker.image = null;
       swipePicker.imageName = "";
@@ -2821,6 +2814,11 @@ const graph = new LGraph();
     }
 
     async function captureSwipePickerScreen() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.captureSwipePickerScreen) {
+        await _pickerEditorController.captureSwipePickerScreen();
+        return;
+      }
       try {
         setStatus("正在捕捉手机屏幕...");
         const deviceId = findPreferredTapPickerDeviceId();
@@ -2965,6 +2963,11 @@ const graph = new LGraph();
     }
 
     function resetSwipePickerPoints() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.resetSwipePickerPoints) {
+        _pickerEditorController.resetSwipePickerPoints();
+        return;
+      }
       swipePicker.startX = null;
       swipePicker.startY = null;
       swipePicker.endX = null;
@@ -2982,6 +2985,11 @@ const graph = new LGraph();
     }
 
     function applySwipePickerPoints() {
+      ensureNodeEditorControllers();
+      if (_pickerEditorController && _pickerEditorController.applySwipePickerPoints) {
+        _pickerEditorController.applySwipePickerPoints();
+        return;
+      }
       if (!swipePicker.node) return;
       if (!Number.isFinite(swipePicker.startX) || !Number.isFinite(swipePicker.startY) ||
           !Number.isFinite(swipePicker.endX) || !Number.isFinite(swipePicker.endY)) {
@@ -3114,6 +3122,7 @@ const graph = new LGraph();
       meta.textContent = metaText;
       body.innerHTML = '<div class="preview-empty">执行后会在这里展示执行报告。</div>';
       currentReportPath = "";
+      currentRunId = "";
     }
 
     function clearTimelinePanel(metaText = "运行回放：暂无") {
@@ -3129,60 +3138,38 @@ const graph = new LGraph();
     }
 
     function stopTimelinePlayback() {
-      if (timelinePlayTimer) {
-        clearTimeout(timelinePlayTimer);
-        timelinePlayTimer = null;
-      }
-      const body = document.getElementById("timeline-body");
-      if (body) {
-        for (const el of body.querySelectorAll(".timeline-item.active")) {
-          el.classList.remove("active");
-        }
-      }
-      const btn = document.getElementById("timeline-play-btn");
-      if (btn) btn.textContent = "播放回放";
+      const state = {
+        timelinePlayTimer,
+        timelinePlayIndex,
+        timelineItems,
+      };
+      if (_reportRuntime.stopPlayback) _reportRuntime.stopPlayback(state);
+      else if (timelinePlayTimer) clearTimeout(timelinePlayTimer);
+      timelinePlayTimer = state.timelinePlayTimer || null;
+      timelinePlayIndex = Number.isFinite(Number(state.timelinePlayIndex))
+        ? Number(state.timelinePlayIndex)
+        : timelinePlayIndex;
     }
 
     function highlightTimelineItem(index) {
-      const body = document.getElementById("timeline-body");
-      if (!body) return;
-      const rows = body.querySelectorAll(".timeline-item");
-      rows.forEach((el) => el.classList.remove("active"));
-      const target = body.querySelector(`.timeline-item[data-index="${index}"]`);
-      if (!target) return;
-      target.classList.add("active");
-      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      timelinePlayIndex = index;
+      const state = { timelinePlayIndex };
+      if (_reportRuntime.highlightItem) _reportRuntime.highlightItem(state, index);
+      timelinePlayIndex = Number.isFinite(Number(state.timelinePlayIndex))
+        ? Number(state.timelinePlayIndex)
+        : Number(index);
     }
 
     function playTimelineSequence(speed = 1) {
-      stopTimelinePlayback();
-      if (!Array.isArray(timelineItems) || !timelineItems.length) return;
-      const safeSpeed = Math.max(0.2, Number(speed) || 1);
-      const btn = document.getElementById("timeline-play-btn");
-      if (btn) btn.textContent = "停止回放";
-      const firstStart = Number(timelineItems[0].start_ts || 0);
-      let idx = 0;
-
-      const step = () => {
-        if (idx >= timelineItems.length) {
-          stopTimelinePlayback();
-          return;
-        }
-        highlightTimelineItem(idx);
-        const curr = timelineItems[idx];
-        const next = timelineItems[idx + 1];
-        if (!next) {
-          timelinePlayTimer = setTimeout(() => stopTimelinePlayback(), 600);
-          return;
-        }
-        const currStart = Number(curr.start_ts || firstStart);
-        const nextStart = Number(next.start_ts || currStart);
-        const deltaMs = Math.max(120, (nextStart - currStart) * 1000 / safeSpeed);
-        idx += 1;
-        timelinePlayTimer = setTimeout(step, deltaMs);
+      const state = {
+        timelinePlayTimer,
+        timelinePlayIndex,
+        timelineItems,
       };
-      step();
+      if (_reportRuntime.playSequence) _reportRuntime.playSequence(state, speed);
+      timelinePlayTimer = state.timelinePlayTimer || null;
+      timelinePlayIndex = Number.isFinite(Number(state.timelinePlayIndex))
+        ? Number(state.timelinePlayIndex)
+        : timelinePlayIndex;
     }
 
     function renderRunTimeline(timeline, sourceText = "执行回放") {
@@ -3190,6 +3177,21 @@ const graph = new LGraph();
       const body = document.getElementById("timeline-body");
       if (!meta || !body) return;
       stopTimelinePlayback();
+
+      if (_reportRuntime.buildTimelineRenderPayload) {
+        const payload = _reportRuntime.buildTimelineRenderPayload(timeline, sourceText, {
+          formatEpochTime,
+          escapeHtml,
+          reportView: _reportView,
+          reportReplay: _reportReplay,
+        });
+        currentTimelineRunId = String(payload.runId || "");
+        timelineItems = Array.isArray(payload.nodes) ? payload.nodes : [];
+        timelinePlayIndex = -1;
+        meta.textContent = String(payload.metaText || `${sourceText}：无节点数据`);
+        body.innerHTML = String(payload.html || "");
+        return;
+      }
 
       const data = timeline && typeof timeline === "object" ? timeline : {};
       const runId = String(data.run_id || "");
@@ -3214,7 +3216,9 @@ const graph = new LGraph();
       const triggerText = String(data.trigger || "-");
       meta.textContent = `${sourceText}：${status || "-"} | run_id=${runId || "-"} | 开始 ${startedAtText} | 节点 ${nodes.length}`;
 
-      const controlsHtml = `
+      const controlsHtml = _reportView.buildTimelineControlsHtml
+        ? _reportView.buildTimelineControlsHtml(triggerText, escapeHtml)
+        : `
         <div class="timeline-controls">
           <button id="timeline-play-btn" onclick="toggleTimelinePlayback()">播放回放</button>
           <label>速度
@@ -3230,11 +3234,25 @@ const graph = new LGraph();
       `;
 
       const listHtml = nodes.map((item, index) => {
+        if (_reportView.buildTimelineItemHtml) {
+          return _reportView.buildTimelineItemHtml(item, index, {
+            escapeHtml,
+            formatEpochTime,
+            statusText: (s) => (_reportReplay.timelineItemStatusText
+              ? _reportReplay.timelineItemStatusText(s)
+              : (s === "error" ? "失败" : "成功")),
+            widthPct: (duration) => (_reportReplay.timelineBarWidth
+              ? _reportReplay.timelineBarWidth(duration, elapsedMs)
+              : Math.max(1, Math.min(100, (duration / elapsedMs) * 100))),
+          });
+        }
         const nodeId = String(item.node_id || "-");
         const classType = String(item.class_type || "-");
         const itemStatus = String(item.status || "ok");
         const duration = Number(item.duration_ms || 0);
-        const width = Math.max(1, Math.min(100, (duration / elapsedMs) * 100));
+        const width = _reportReplay.timelineBarWidth
+          ? _reportReplay.timelineBarWidth(duration, elapsedMs)
+          : Math.max(1, Math.min(100, (duration / elapsedMs) * 100));
         const errorText = String(item.error || "").trim();
         const statusCls = itemStatus === "error" ? "error" : "";
         const rangeText = `${formatEpochTime(Number(item.start_ts || 0))} -> ${formatEpochTime(Number(item.end_ts || 0))}`;
@@ -3243,7 +3261,7 @@ const graph = new LGraph();
           <div class="timeline-item ${statusCls}" data-index="${index}">
             <div class="timeline-item-head">
               <span class="timeline-title">节点 ${escapeHtml(nodeId)} · ${escapeHtml(classType)}</span>
-              <span class="timeline-status ${statusCls}">${itemStatus === "error" ? "失败" : "成功"}</span>
+              <span class="timeline-status ${statusCls}">${_reportReplay.timelineItemStatusText ? _reportReplay.timelineItemStatusText(itemStatus) : (itemStatus === "error" ? "失败" : "成功")}</span>
             </div>
             <div class="timeline-metrics">
               <span>耗时: ${duration.toFixed(1)} ms</span>
@@ -3259,16 +3277,26 @@ const graph = new LGraph();
     }
 
     function toggleTimelinePlayback() {
-      if (timelinePlayTimer) {
-        stopTimelinePlayback();
-        return;
-      }
       const speedEl = document.getElementById("timeline-speed-select");
       const speed = speedEl ? Number(speedEl.value || "1") : 1;
-      playTimelineSequence(speed);
+      const state = {
+        timelinePlayTimer,
+        timelinePlayIndex,
+        timelineItems,
+      };
+      if (_reportRuntime.togglePlayback) _reportRuntime.togglePlayback(state, speed);
+      else if (timelinePlayTimer) stopTimelinePlayback();
+      else playTimelineSequence(speed);
+      timelinePlayTimer = state.timelinePlayTimer || null;
+      timelinePlayIndex = Number.isFinite(Number(state.timelinePlayIndex))
+        ? Number(state.timelinePlayIndex)
+        : timelinePlayIndex;
     }
 
     function renderReportSummaryCard(title, value, status = "") {
+      if (_reportView.buildReportSummaryCard) {
+        return _reportView.buildReportSummaryCard(title, value, status);
+      }
       const cls = status ? `report-card ${status}` : "report-card";
       return `<div class="${cls}"><div class="k">${title}</div><div class="v">${value}</div></div>`;
     }
@@ -3277,6 +3305,17 @@ const graph = new LGraph();
       const meta = document.getElementById("report-meta-text");
       const body = document.getElementById("report-body");
       if (!meta || !body) return;
+
+      if (_reportRuntime.buildReportRenderPayload) {
+        const rendered = _reportRuntime.buildReportRenderPayload(payload, reportPath, sourceText, {
+          escapeHtml,
+          reportView: _reportView,
+        });
+        meta.textContent = String(rendered.metaText || `${sourceText}：-`);
+        body.innerHTML = String(rendered.html || "");
+        currentReportPath = reportPath || "";
+        return;
+      }
 
       const report = payload && typeof payload === "object" ? payload : {};
       const ok = !!report.ok;
@@ -3313,6 +3352,7 @@ const graph = new LGraph();
     }
 
     function escapeHtml(text) {
+      if (_reportController.escapeHtml) return _reportController.escapeHtml(text);
       const raw = String(text == null ? "" : text);
       return raw
         .replaceAll("&", "&amp;")
@@ -3322,7 +3362,7 @@ const graph = new LGraph();
         .replaceAll("'", "&#39;");
     }
 
-    async function openReportInBottomTab(path, sourceText = "执行报告") {
+    async function openReportInBottomTab(path, sourceText = "执行报告", expectedRunId = "") {
       if (!path) {
         clearReportPanel("执行报告：暂无");
         clearTimelinePanel("运行回放：暂无");
@@ -3330,12 +3370,23 @@ const graph = new LGraph();
         return;
       }
       try {
-        const res = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "读取报告失败");
+        const data = _reportController.readReport
+          ? await _reportController.readReport(path)
+          : await (async () => {
+              const res = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
+              const d = await res.json();
+              if (!d.ok) throw new Error(d.error || "读取报告失败");
+              return d;
+            })();
         const report = data.report || {};
+        const reportRunId = String(report.run_id || "");
+        const expect = String(expectedRunId || "").trim();
+        if (expect && reportRunId && expect !== reportRunId) {
+          throw new Error(`报告 run_id 不匹配（期望 ${expect}，实际 ${reportRunId}）`);
+        }
+        currentRunId = reportRunId || expect;
         renderExecutionReport(report, String(data.path || path), sourceText);
-        await openTimelineByReportPath(String(data.path || path), sourceText);
+        await openTimelineByReportPath(String(data.path || path), sourceText, currentRunId);
         if (report && typeof report === "object" && report.outputs && typeof report.outputs === "object") {
           applyPreviewImagesToNodes(report.outputs);
           renderPreviewTable(report.outputs);
@@ -3349,15 +3400,24 @@ const graph = new LGraph();
       }
     }
 
-    async function openTimelineByReportPath(path, sourceText = "执行回放") {
+    async function openTimelineByReportPath(path, sourceText = "执行回放", runId = "") {
       if (!path) {
         clearTimelinePanel("执行回放：暂无");
         return;
       }
       try {
-        const res = await fetch(`/api/run/timeline?report_path=${encodeURIComponent(path)}`);
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "读取运行回放失败");
+        const data = _reportController.readTimeline
+          ? await _reportController.readTimeline(path, runId)
+          : await (async () => {
+              const rid = String(runId || "").trim();
+              const query = rid
+                ? `run_id=${encodeURIComponent(rid)}`
+                : `report_path=${encodeURIComponent(path)}`;
+              const res = await fetch(`/api/run/timeline?${query}`);
+              const d = await res.json();
+              if (!d.ok) throw new Error(d.error || "读取运行回放失败");
+              return d;
+            })();
         renderRunTimeline(data.timeline || {}, sourceText);
       } catch (err) {
         clearTimelinePanel(`运行回放：${sourceText}读取失败`);
@@ -3448,6 +3508,10 @@ const graph = new LGraph();
     }
 
     function zoomIn() {
+      if (_uiLayout.zoom) {
+        _uiLayout.zoom(canvas, markCanvasDirty, setStatus, "in");
+        return;
+      }
       const next = Math.min(2.2, (canvas.ds.scale || 1) * 1.15);
       canvas.ds.changeScale(next, [canvas.canvas.width * 0.5, canvas.canvas.height * 0.5]);
       markCanvasDirty();
@@ -3455,6 +3519,10 @@ const graph = new LGraph();
     }
 
     function zoomOut() {
+      if (_uiLayout.zoom) {
+        _uiLayout.zoom(canvas, markCanvasDirty, setStatus, "out");
+        return;
+      }
       const next = Math.max(0.2, (canvas.ds.scale || 1) / 1.15);
       canvas.ds.changeScale(next, [canvas.canvas.width * 0.5, canvas.canvas.height * 0.5]);
       markCanvasDirty();
@@ -3462,6 +3530,10 @@ const graph = new LGraph();
     }
 
     function resetView() {
+      if (_uiLayout.resetView) {
+        _uiLayout.resetView(canvas, markCanvasDirty, setStatus);
+        return;
+      }
       canvas.ds.scale = 1;
       canvas.ds.offset[0] = 0;
       canvas.ds.offset[1] = 0;
@@ -3470,6 +3542,10 @@ const graph = new LGraph();
     }
 
     function arrangeAndFit() {
+      if (_uiLayout.arrangeNodes) {
+        _uiLayout.arrangeNodes(graph, markCanvasDirty, fitToView, setStatus);
+        return;
+      }
       const nodes = (graph._nodes || []).slice().sort((a, b) => a.id - b.id);
       const cols = 3;
       const gapX = 340;
@@ -3487,6 +3563,10 @@ const graph = new LGraph();
     }
 
     function fitToView(silent = false) {
+      if (_uiLayout.fitToView) {
+        _uiLayout.fitToView(graph, canvas, markCanvasDirty, { silent, onStatus: setStatus });
+        return;
+      }
       const nodes = graph._nodes || [];
       if (!nodes.length) {
         markCanvasDirty();
@@ -3549,54 +3629,27 @@ const graph = new LGraph();
 
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        const imageLightbox = document.getElementById("image-lightbox-modal");
-        if (imageLightbox && !imageLightbox.classList.contains("hidden")) {
-          closeImageLightbox();
-          return;
-        }
-        const workflowPicker = document.getElementById("workflow-picker-modal");
-        if (workflowPicker && !workflowPicker.classList.contains("hidden")) {
-          closeWorkflowPicker();
-          return;
-        }
-        const helperModal = document.getElementById("region-helper-modal");
-        if (helperModal && !helperModal.classList.contains("hidden")) {
-          closeRegionHelper();
-          return;
-        }
-        const tapPickerModal = document.getElementById("tap-picker-modal");
-        if (tapPickerModal && !tapPickerModal.classList.contains("hidden")) {
-          closeTapPicker();
-          return;
-        }
-        const swipePickerModal = document.getElementById("swipe-picker-modal");
-        if (swipePickerModal && !swipePickerModal.classList.contains("hidden")) {
-          closeSwipePicker();
-          return;
-        }
-        const dedupModal = document.getElementById("dedup-keys-modal");
-        if (dedupModal && !dedupModal.classList.contains("hidden")) {
-          closeDedupKeysEditor();
-          return;
-        }
-        const scheduleModal = document.getElementById("schedule-modal");
-        if (scheduleModal && !scheduleModal.classList.contains("hidden")) {
-          closeScheduleModal();
-          return;
-        }
-        const scheduleListModal = document.getElementById("schedule-list-modal");
-        if (scheduleListModal && !scheduleListModal.classList.contains("hidden")) {
-          closeScheduleListModal();
-          return;
-        }
-        const scheduleReportModal = document.getElementById("schedule-report-modal");
-        if (scheduleReportModal && !scheduleReportModal.classList.contains("hidden")) {
-          closeScheduleReportModal();
-          return;
-        }
-        const regionsModal = document.getElementById("regions-modal");
-        if (regionsModal && !regionsModal.classList.contains("hidden")) {
-          closeRegionsEditor();
+        const escModalClosers = [
+          { id: "image-lightbox-modal", close: closeImageLightbox },
+          { id: "workflow-picker-modal", close: closeWorkflowPicker },
+          { id: "region-helper-modal", close: closeRegionHelper },
+          { id: "tap-picker-modal", close: closeTapPicker },
+          { id: "swipe-picker-modal", close: closeSwipePicker },
+          { id: "dedup-keys-modal", close: closeDedupKeysEditor },
+          { id: "schedule-modal", close: closeScheduleModal },
+          { id: "schedule-list-modal", close: closeScheduleListModal },
+          { id: "schedule-report-modal", close: closeScheduleReportModal },
+          { id: "regions-modal", close: closeRegionsEditor },
+        ];
+        for (const item of escModalClosers) {
+          const open = _modalController
+            ? _modalController.isOpen(item.id)
+            : (() => {
+                const el = document.getElementById(item.id);
+                return !!(el && !el.classList.contains("hidden"));
+              })();
+          if (!open) continue;
+          item.close();
           return;
         }
       }
@@ -3645,6 +3698,7 @@ const graph = new LGraph();
       refreshLatestScheduleOutcome(true);
     }, 3000);
 
+    loadWorkflowSchema();
     refreshDevices();
     loadDefaultWorkflow();
     switchBottomTab("logs");
