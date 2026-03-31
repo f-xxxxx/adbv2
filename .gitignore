@@ -5,3 +5,4 @@ schedules/
 .idea/
 .vscode/
 .venv/
+logs/

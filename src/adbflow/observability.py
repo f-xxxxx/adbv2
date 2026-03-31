@@ -6,11 +6,37 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 _LOGGER_NAME = "adbflow"
 _LOG_INIT_LOCK = threading.Lock()
 _LOG_INITIALIZED = False
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_LOGS_DIR = _PROJECT_ROOT / "logs"
+
+
+class DailyTextFileHandler(logging.Handler):
+    """Write logs to logs/YYYY-MM-DD.txt.
+
+    Open/close file on each emit to avoid long-lived file descriptors.
+    """
+
+    def __init__(self, logs_dir: Path) -> None:
+        super().__init__()
+        self._logs_dir = logs_dir
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            day = datetime.now().strftime("%Y-%m-%d")
+            self._logs_dir.mkdir(parents=True, exist_ok=True)
+            log_path = self._logs_dir / f"{day}.txt"
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(message)
+                f.write("\n")
+        except Exception:
+            self.handleError(record)
 
 
 def setup_logging() -> None:
@@ -23,10 +49,15 @@ def setup_logging() -> None:
         logger = logging.getLogger(_LOGGER_NAME)
         logger.setLevel(logging.INFO)
         logger.propagate = False
+        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
         if not logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter("%(message)s"))
-            logger.addHandler(handler)
+            formatter = logging.Formatter("%(message)s")
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            file_handler = DailyTextFileHandler(_LOGS_DIR)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(stream_handler)
+            logger.addHandler(file_handler)
         _LOG_INITIALIZED = True
 
 
