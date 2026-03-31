@@ -54,6 +54,7 @@ const graph = new LGraph();
     const regionHelper = {
       image: null,
       imageName: "",
+      tempCaptureToken: "",
       scale: 1,
       offsetX: 0,
       offsetY: 0,
@@ -536,6 +537,9 @@ const graph = new LGraph();
           regionHelper,
           markCanvasDirty,
           setStatus,
+          log,
+          graph,
+          classMap: CLASS_MAP,
           modalController: _modalController,
           getCurrentNode: () => currentEditingOcrNode,
           setCurrentNode: (node) => {
@@ -2399,20 +2403,27 @@ const graph = new LGraph();
       drawRegionHelperCanvas();
     }
 
-    function closeRegionHelper() {
+    async function closeRegionHelper() {
       ensureNodeEditorControllers();
       if (_ocrRegionEditorController && _ocrRegionEditorController.closeHelper) {
-        _ocrRegionEditorController.closeHelper();
+        await _ocrRegionEditorController.closeHelper();
         return;
       }
+      await cleanupRegionHelperCapturedImage();
       const modal = document.getElementById("region-helper-modal");
       modal.classList.add("hidden");
+      const fileInput = document.getElementById("region-helper-file");
+      if (fileInput) fileInput.value = "";
+      regionHelper.image = null;
+      regionHelper.imageName = "";
       regionHelper.drawing = false;
       regionHelper.tempRect = null;
+      updateRegionHelperImageInfo();
       drawRegionHelperCanvas();
     }
 
-    function onRegionHelperFileChange(event) {
+    async function onRegionHelperFileChange(event) {
+      await cleanupRegionHelperCapturedImage();
       const file = event.target.files && event.target.files[0];
       if (!file) return;
       const reader = new FileReader();
@@ -2776,6 +2787,63 @@ const graph = new LGraph();
         img.src = String(reader.result || "");
       };
       reader.readAsDataURL(file);
+    }
+
+    async function cleanupRegionHelperCapturedImage() {
+      const token = String(regionHelper.tempCaptureToken || "").trim();
+      regionHelper.tempCaptureToken = "";
+      if (!token) return;
+      try {
+        await fetch("/api/tap-picker/cleanup-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+      } catch (_err) {
+      }
+    }
+
+    async function captureRegionHelperScreen() {
+      ensureNodeEditorControllers();
+      if (_ocrRegionEditorController && _ocrRegionEditorController.captureHelperScreen) {
+        await _ocrRegionEditorController.captureHelperScreen();
+        return;
+      }
+      try {
+        setStatus("正在捕捉手机屏幕...");
+        const deviceId = findPreferredTapPickerDeviceId();
+        const res = await fetch("/api/tap-picker/capture-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: deviceId })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "捕捉失败");
+
+        await cleanupRegionHelperCapturedImage();
+        regionHelper.tempCaptureToken = String(data.token || "");
+
+        const src = String(data.image_data_url || "");
+        if (!src) throw new Error("截图数据为空");
+
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            regionHelper.image = img;
+            regionHelper.imageName = String(data.image_name || "手机截图");
+            resizeRegionHelperCanvas();
+            drawRegionHelperCanvas();
+            updateRegionHelperImageInfo();
+            resolve();
+          };
+          img.onerror = () => reject(new Error("截图加载失败"));
+          img.src = src;
+        });
+        setStatus("已捕捉手机屏幕，可开始框选区域");
+      } catch (err) {
+        log("捕捉手机屏幕失败: " + err.message);
+        setStatus("捕捉手机屏幕失败");
+      }
     }
 
     function findPreferredTapPickerDeviceId() {

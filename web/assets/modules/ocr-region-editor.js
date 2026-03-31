@@ -6,6 +6,9 @@
       regionHelper,
       markCanvasDirty,
       setStatus,
+      log,
+      graph,
+      classMap,
       modalController,
       getCurrentNode,
       setCurrentNode,
@@ -201,18 +204,25 @@
       drawHelperCanvas();
     }
 
-    function closeHelper() {
+    async function closeHelper() {
+      await cleanupHelperCapturedImage();
       if (modalController) modalController.close("region-helper-modal");
       else {
         const modal = document.getElementById("region-helper-modal");
         if (modal) modal.classList.add("hidden");
       }
+      const fileInput = document.getElementById("region-helper-file");
+      if (fileInput) fileInput.value = "";
+      regionHelper.image = null;
+      regionHelper.imageName = "";
       regionHelper.drawing = false;
       regionHelper.tempRect = null;
+      updateHelperImageInfo();
       drawHelperCanvas();
     }
 
-    function onHelperFileChange(event) {
+    async function onHelperFileChange(event) {
+      await cleanupHelperCapturedImage();
       const file = event.target.files && event.target.files[0];
       if (!file) return;
       const reader = new FileReader();
@@ -229,6 +239,69 @@
         img.src = String(reader.result || "");
       };
       reader.readAsDataURL(file);
+    }
+
+    function findPreferredDeviceId() {
+      const nodes = graph && graph._nodes ? graph._nodes : [];
+      const map = classMap || {};
+      const startNodes = nodes.filter((n) => n && map[n.type] === "StartDevice");
+      for (const node of startNodes) {
+        const deviceId = String((node.properties && node.properties.device_id) || "").trim();
+        if (deviceId) return deviceId;
+      }
+      return "";
+    }
+
+    async function cleanupHelperCapturedImage() {
+      const token = String(regionHelper.tempCaptureToken || "").trim();
+      regionHelper.tempCaptureToken = "";
+      if (!token) return;
+      try {
+        await fetch("/api/tap-picker/cleanup-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+      } catch (_err) {
+      }
+    }
+
+    async function captureHelperScreen() {
+      try {
+        if (typeof setStatus === "function") setStatus("正在捕捉手机屏幕...");
+        const deviceId = findPreferredDeviceId();
+        const res = await fetch("/api/tap-picker/capture-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: deviceId }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "捕捉失败");
+
+        await cleanupHelperCapturedImage();
+        regionHelper.tempCaptureToken = String(data.token || "");
+
+        const src = String(data.image_data_url || "");
+        if (!src) throw new Error("截图数据为空");
+
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            regionHelper.image = img;
+            regionHelper.imageName = String(data.image_name || "手机截图");
+            resizeHelperCanvas();
+            drawHelperCanvas();
+            updateHelperImageInfo();
+            resolve();
+          };
+          img.onerror = () => reject(new Error("截图加载失败"));
+          img.src = src;
+        });
+        if (typeof setStatus === "function") setStatus("已捕捉手机屏幕，可开始框选区域");
+      } catch (err) {
+        if (typeof log === "function") log("捕捉手机屏幕失败: " + err.message);
+        if (typeof setStatus === "function") setStatus("捕捉手机屏幕失败");
+      }
     }
 
     function resizeHelperCanvas() {
@@ -466,6 +539,7 @@
       saveEditor,
       openHelper,
       closeHelper,
+      captureHelperScreen,
       clearHelperRects,
       applyHelperToEditor,
     };
