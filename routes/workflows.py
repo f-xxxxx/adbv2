@@ -267,40 +267,44 @@ def run_workflow_stream():
 
     @stream_with_context
     def generate():
-        while True:
-            item = event_queue.get()
-            if item is None:
-                break
-            yield json.dumps(item, ensure_ascii=False) + "\n"
+        try:
+            while True:
+                item = event_queue.get()
+                if item is None:
+                    break
+                yield json.dumps(item, ensure_ascii=False) + "\n"
 
-        if "error" in error_holder:
+            if "error" in error_holder:
+                yield json.dumps(
+                    {
+                        "type": "error",
+                        "error": error_holder["error"],
+                        "error_code": error_holder.get("error_code", ErrorCode.RUN_FAILED),
+                    },
+                    ensure_ascii=False,
+                ) + "\n"
+                return
+
+            result = result_holder.get("result")
+            if result is None:
+                yield json.dumps(
+                    {"type": "error", "error": "执行结果为空", "error_code": ErrorCode.INTERNAL_ERROR},
+                    ensure_ascii=False,
+                ) + "\n"
+                return
+
             yield json.dumps(
                 {
-                    "type": "error",
-                    "error": error_holder["error"],
-                    "error_code": error_holder.get("error_code", ErrorCode.RUN_FAILED),
+                    "type": "result",
+                    "outputs": result.outputs,
+                    "logs": result.logs,
+                    "report_path": result_holder.get("report_path", ""),
                 },
                 ensure_ascii=False,
             ) + "\n"
-            return
-
-        result = result_holder.get("result")
-        if result is None:
-            yield json.dumps(
-                {"type": "error", "error": "执行结果为空", "error_code": ErrorCode.INTERNAL_ERROR},
-                ensure_ascii=False,
-            ) + "\n"
-            return
-
-        yield json.dumps(
-            {
-                "type": "result",
-                "outputs": result.outputs,
-                "logs": result.logs,
-                "report_path": result_holder.get("report_path", ""),
-            },
-            ensure_ascii=False,
-        ) + "\n"
+        except GeneratorExit:
+            cancel_event.set()
+            raise
 
     return Response(generate(), mimetype="application/x-ndjson")
 

@@ -319,8 +319,11 @@
             <div class="helper-section">
               <input id="tap-picker-file" class="helper-file" type="file" accept="image/*" />
             </div>
+            <div class="helper-section">
+              <button onclick="captureTapPickerScreen()">捕捉手机屏幕</button>
+            </div>
             <div class="helper-section">当前坐标：<span id="tap-picker-point-value">未选择</span></div>
-            <div class="helper-empty">上传截图后，在左侧单击目标位置，确认后写回点击节点。</div>
+            <div class="helper-empty">可上传本地图或直接捕捉手机屏幕，在左侧单击目标位置后写回点击节点。</div>
             <div class="helper-actions">
               <button onclick="closeTapPicker()">取消</button>
               <button class="primary" onclick="applyTapPickerPoint()">写入坐标</button>
@@ -345,15 +348,20 @@
               <canvas id="swipe-picker-canvas" class="helper-canvas tap-picker-canvas"></canvas>
             </div>
           </div>
-          <div class="helper-right tap-picker-right">
+          <div class="helper-right tap-picker-right swipe-picker-right">
             <div class="helper-section">
               <input id="swipe-picker-file" class="helper-file" type="file" accept="image/*" />
             </div>
-            <div class="helper-empty">起点用于确定滑动起始位置；终点用于确定方向和滑动像素。</div>
-            <div class="helper-actions">
-              <button onclick="resetSwipePickerPoints()">重置</button>
-              <button onclick="closeSwipePicker()">取消</button>
-              <button class="primary" onclick="applySwipePickerPoints()">写入滑动参数</button>
+            <div class="helper-section">
+              <button onclick="captureSwipePickerScreen()">捕捉手机屏幕</button>
+            </div>
+            <div class="swipe-picker-bottom">
+              <div class="helper-empty">起点用于确定滑动起始位置；终点用于确定方向和滑动像素。</div>
+              <div class="helper-actions">
+                <button onclick="resetSwipePickerPoints()">重置</button>
+                <button onclick="closeSwipePicker()">取消</button>
+                <button class="primary" onclick="applySwipePickerPoints()">写入滑动参数</button>
+              </div>
             </div>
           </div>
         </div>

@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import cv2
 import easyocr
 import numpy as np
 import pandas as pd
@@ -275,56 +274,26 @@ class ScreenshotNode(BaseNode):
         prefix = str(inputs.get("prefix", "shot")).strip()
         if not prefix:
             prefix = "shot"
-        scroll = self._as_bool(inputs.get("scroll"), False)
-        scroll_count = max(1, self._as_int(inputs.get("scroll_count"), 1))
-        scroll_direction = _normalize_swipe_direction(inputs.get("scroll_direction"), default="up")
-        swipe_duration_ms = self._as_int(inputs.get("swipe_duration_ms"), 300)
-        swipe_pause_sec = self._as_float(inputs.get("swipe_pause_sec"), 0.8)
-        capture_pause_sec = self._as_float(inputs.get("capture_pause_sec"), 0.2)
-        scroll_distance_px: int | None = None
-        if inputs.get("scroll_distance_px") is not None:
-            scroll_distance_px = max(1, self._as_int(inputs.get("scroll_distance_px"), 120))
-
-        capture_count = scroll_count if scroll else 1
         loop_iteration = _payload_loop_iteration(payload)
         ctx.adb.mkdir(device_id, remote_dir)
 
         remote_paths: list[str] = list(payload.get("remote_paths") or [])
-        for i in range(capture_count):
-            ctx.ensure_not_cancelled()
-            ts_ms = int(time.time() * 1000)
-            rand_suffix = secrets.token_hex(3)
-            name = f"{prefix}_{ts_ms}_{rand_suffix}_r{loop_iteration}_s{i + 1}.png"
-            remote_path = f"{remote_dir.rstrip('/')}/{name}"
-            ctx.adb.screenshot_to_remote(device_id, remote_path)
-            remote_paths.append(remote_path)
-            self._sleep_with_cancel(ctx, capture_pause_sec)
+        ctx.ensure_not_cancelled()
+        ts_ms = int(time.time() * 1000)
+        rand_suffix = secrets.token_hex(3)
+        name = f"{prefix}_{ts_ms}_{rand_suffix}_r{loop_iteration}_s1.png"
+        remote_path = f"{remote_dir.rstrip('/')}/{name}"
+        ctx.adb.screenshot_to_remote(device_id, remote_path)
+        remote_paths.append(remote_path)
 
-            if scroll and i < capture_count - 1:
-                if scroll_distance_px is not None:
-                    sx1, sy1, sx2, sy2 = _direction_swipe_coords_by_distance(
-                        adb=ctx.adb,
-                        device_id=device_id,
-                        direction=scroll_direction,
-                        distance_px=scroll_distance_px,
-                    )
-                else:
-                    sx1, sy1, sx2, sy2 = _direction_swipe_coords(ctx.adb, device_id, scroll_direction)
-                ctx.adb.swipe(device_id, sx1, sy1, sx2, sy2, duration_ms=swipe_duration_ms)
-                self._sleep_with_cancel(ctx, swipe_pause_sec)
-
-        distance_text = f"，滚动像素={scroll_distance_px}" if scroll and scroll_distance_px is not None else ""
         ctx.log(
-            f"[截图节点] 设备={device_id}，张数={capture_count}，滚动={'是' if scroll else '否'}"
-            f"{distance_text}，轮次=r{loop_iteration}，手机目录={remote_dir}"
+            f"[截图节点] 设备={device_id}，张数=1，轮次=r{loop_iteration}，手机目录={remote_dir}"
         )
         return {
             **payload,
             "device_id": device_id,
             "remote_paths": remote_paths,
-            "scroll": scroll,
             "remote_dir": remote_dir,
-            "scroll_distance_px": scroll_distance_px,
         }
 
 
@@ -374,8 +343,6 @@ class PullToPcNode(BaseNode):
         else:
             ctx.log(f"[回传节点] 保留目录历史文件：{save_dir}")
         cleanup_remote = self._as_bool(inputs.get("cleanup_remote"), False)
-        stitch_scroll = self._as_bool(inputs.get("stitch_scroll"), True)
-        max_overlap_px = self._as_int(inputs.get("max_overlap_px"), 300)
 
         local_paths: list[str] = []
         for remote_path in remote_paths:
@@ -383,12 +350,6 @@ class PullToPcNode(BaseNode):
             local_path = save_dir / Path(remote_path).name
             ctx.adb.pull(device_id, remote_path, str(local_path))
             local_paths.append(str(local_path))
-
-        stitched_path: str | None = None
-        if stitch_scroll and len(local_paths) > 1:
-            stitched_path = str(save_dir / f"stitched_{int(time.time())}.png")
-            stitch_scroll_images(local_paths, stitched_path, max_overlap_px=max_overlap_px)
-            ctx.log(f"[回传节点] 已拼接长图：{stitched_path}")
 
         if cleanup_remote:
             ctx.adb.remove_remote_files(device_id, remote_paths)
@@ -399,7 +360,6 @@ class PullToPcNode(BaseNode):
             **payload,
             "device_id": device_id,
             "local_paths": local_paths,
-            "stitched_path": stitched_path,
             "save_dir": str(save_dir),
             "clear_save_dir": clear_save_dir,
         }
@@ -429,18 +389,13 @@ class EasyOCRNode(BaseNode):
         ctx.ensure_not_cancelled()
         payload = inputs.get("input") if isinstance(inputs.get("input"), dict) else {}
         local_paths = list(payload.get("local_paths") or [])
-        stitched_path = payload.get("stitched_path")
-        use_all_images = self._as_bool(inputs.get("use_all_images"), False)
         image_dir = str(inputs.get("image_dir", "")).strip()
 
         if image_dir:
             image_paths = _collect_images_from_dir(image_dir)
             ctx.log(f"[文字识别节点] 从图片文件夹读取：{image_dir}，找到 {len(image_paths)} 张")
         else:
-            if stitched_path and not use_all_images:
-                image_paths = [stitched_path]
-            else:
-                image_paths = local_paths
+            image_paths = local_paths
 
         if not image_paths:
             raise NodeExecutionError("未找到可识别图片，请确认已连接回传节点或设置图片文件夹。")
@@ -651,19 +606,6 @@ def _payload_loop_iteration(payload: dict[str, Any]) -> int:
     return max(1, parsed)
 
 
-def _direction_swipe_coords(adb: ADBClient, device_id: str, direction: str) -> tuple[int, int, int, int]:
-    w, h = adb.screen_size(device_id)
-    x = w // 2
-    y_top = int(h * 0.25)
-    y_bottom = int(h * 0.75)
-
-    if direction == "up":
-        return x, y_bottom, x, y_top
-    if direction == "down":
-        return x, y_top, x, y_bottom
-    raise NodeExecutionError("滑动方向参数无效，请选择上滑或下滑")
-
-
 def _direction_swipe_coords_by_distance(
     adb: ADBClient,
     device_id: str,
@@ -731,44 +673,6 @@ def _normalize_swipe_direction(value: Any, default: str = "up") -> str:
     if text in {"down", "d", "下滑"}:
         return "down"
     return default
-
-
-def stitch_scroll_images(local_paths: list[str], output_path: str, max_overlap_px: int = 300) -> None:
-    imgs = [cv2.imread(path) for path in local_paths]
-    if not imgs or any(img is None for img in imgs):
-        raise NodeExecutionError("无法读取滚动截图，拼接失败")
-
-    merged = imgs[0]
-    for nxt in imgs[1:]:
-        if nxt.shape[1] != merged.shape[1]:
-            nxt = cv2.resize(nxt, (merged.shape[1], int(nxt.shape[0] * merged.shape[1] / nxt.shape[1])))
-        overlap = _find_best_overlap(merged, nxt, max_overlap_px=max_overlap_px)
-        merged = np.vstack((merged, nxt[overlap:, :, :]))
-
-    ok = cv2.imwrite(output_path, merged)
-    if not ok:
-        raise NodeExecutionError(f"写入拼接图片失败：{output_path}")
-
-
-def _find_best_overlap(prev_img: np.ndarray, next_img: np.ndarray, max_overlap_px: int) -> int:
-    prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
-    next_gray = cv2.cvtColor(next_img, cv2.COLOR_BGR2GRAY)
-    max_overlap = max(1, min(max_overlap_px, prev_gray.shape[0] - 1, next_gray.shape[0] - 1))
-    min_overlap = min(60, max_overlap)
-
-    left = int(prev_gray.shape[1] * 0.15)
-    right = int(prev_gray.shape[1] * 0.85)
-    best_overlap = min_overlap
-    best_score = float("inf")
-
-    for overlap in range(min_overlap, max_overlap + 1, 8):
-        a = prev_gray[-overlap:, left:right]
-        b = next_gray[:overlap, left:right]
-        score = float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16))))
-        if score < best_score:
-            best_score = score
-            best_overlap = overlap
-    return best_overlap
 
 
 def _parse_langs(value: Any) -> list[str]:

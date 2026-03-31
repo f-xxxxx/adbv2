@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
+import secrets
+import threading
+import time
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request
@@ -27,6 +31,10 @@ from src.adbflow.persistence import (
 )
 
 utils_bp = Blueprint("utils", __name__)
+_TAP_PICKER_TEMP_LOCK = threading.Lock()
+_TAP_PICKER_TEMP: dict[str, dict[str, str | float]] = {}
+_TAP_PICKER_TMP_DIR = (Path("outputs/tmp/tap_picker")).resolve()
+_TAP_PICKER_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @utils_bp.get("/api/devices")
@@ -191,3 +199,97 @@ def open_location():
             "selected_file": str(select_file) if select_file else "",
         }
     )
+
+
+@utils_bp.post("/api/tap-picker/capture-screen")
+def tap_picker_capture_screen():
+    payload = request.get_json(silent=True) or {}
+    requested = str(payload.get("device_id", "")).strip()
+    try:
+        devices = adb.list_devices()
+    except ADBError as exc:
+        return err(str(exc), ErrorCode.DEVICE_ERROR, 500)
+
+    if not devices:
+        return err("未找到在线设备，请先连接手机", ErrorCode.DEVICE_ERROR, 400)
+
+    device_id = requested
+    if device_id:
+        if device_id not in devices:
+            return err(f"指定设备不在线：{device_id}", ErrorCode.DEVICE_ERROR, 400)
+    else:
+        if len(devices) > 1:
+            return err("检测到多台设备，请在开始节点中明确设置设备编号", ErrorCode.BAD_REQUEST, 400)
+        device_id = devices[0]
+
+    token = secrets.token_hex(8)
+    local_path = (_TAP_PICKER_TMP_DIR / f"tap_picker_{token}.png").resolve()
+    remote_path = f"/sdcard/adbflow/tap_picker_{token}.png"
+
+    try:
+        adb.mkdir(device_id, "/sdcard/adbflow")
+        adb.screenshot_to_remote(device_id, remote_path)
+        adb.pull(device_id, remote_path, str(local_path))
+    except ADBError as exc:
+        return err(f"抓取手机屏幕失败：{exc}", ErrorCode.DEVICE_ERROR, 500)
+    finally:
+        try:
+            adb.remove_remote_files(device_id, [remote_path])
+        except Exception:
+            pass
+
+    try:
+        image_b64 = base64.b64encode(local_path.read_bytes()).decode("ascii")
+    except Exception as exc:
+        try:
+            local_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return err(f"读取截图失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
+
+    now_ts = time.time()
+    with _TAP_PICKER_TEMP_LOCK:
+        _TAP_PICKER_TEMP[token] = {"path": str(local_path), "created_at": now_ts}
+        expired = [
+            tk
+            for tk, meta in _TAP_PICKER_TEMP.items()
+            if now_ts - float(meta.get("created_at", now_ts)) > 600.0
+        ]
+        for tk in expired:
+            meta = _TAP_PICKER_TEMP.pop(tk, None)
+            stale_path = str(meta.get("path", "")).strip() if isinstance(meta, dict) else ""
+            if stale_path:
+                try:
+                    Path(stale_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    return jsonify(
+        {
+            "ok": True,
+            "device_id": device_id,
+            "token": token,
+            "image_name": local_path.name,
+            "image_data_url": f"data:image/png;base64,{image_b64}",
+        }
+    )
+
+
+@utils_bp.post("/api/tap-picker/cleanup-screen")
+def tap_picker_cleanup_screen():
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get("token", "")).strip()
+    if not token:
+        return jsonify({"ok": True, "removed": False})
+
+    local_path = ""
+    with _TAP_PICKER_TEMP_LOCK:
+        meta = _TAP_PICKER_TEMP.pop(token, None)
+        if isinstance(meta, dict):
+            local_path = str(meta.get("path", "")).strip()
+    if local_path:
+        try:
+            Path(local_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    return jsonify({"ok": True, "removed": bool(local_path)})

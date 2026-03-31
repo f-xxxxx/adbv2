@@ -68,6 +68,7 @@ const graph = new LGraph();
       node: null,
       image: null,
       imageName: "",
+      tempCaptureToken: "",
       scale: 1,
       offsetX: 0,
       offsetY: 0,
@@ -78,6 +79,7 @@ const graph = new LGraph();
       node: null,
       image: null,
       imageName: "",
+      tempCaptureToken: "",
       scale: 1,
       offsetX: 0,
       offsetY: 0,
@@ -212,29 +214,12 @@ const graph = new LGraph();
       this.title = "截图节点";
       this.properties = {
         remote_dir: "/sdcard/adbflow",
-        prefix: "capture",
-        scroll: true,
-        scroll_count: 3,
-        scroll_distance_px: 120,
-        scroll_direction: "up",
-        swipe_duration_ms: 300,
-        swipe_pause_sec: 0.8,
-        capture_pause_sec: 0.2
+        prefix: "capture"
       };
       makeIO(this, true);
       this.addWidget("text", "手机目录", this.properties.remote_dir, (v) => this.properties.remote_dir = v);
       this.addWidget("text", "文件名前缀", this.properties.prefix, (v) => this.properties.prefix = v);
-      this.addWidget("toggle", "滚动截图", this.properties.scroll, (v) => this.properties.scroll = !!v);
-      this.addWidget("number", "截图张数", this.properties.scroll_count, (v) => this.properties.scroll_count = Number(v));
-      this.addWidget("number", "滚动像素", this.properties.scroll_distance_px, (v) => this.properties.scroll_distance_px = Number(v));
-      this.addWidget(
-        "combo",
-        "滚动方向",
-        directionValueToLabel(this.properties.scroll_direction),
-        (v) => this.properties.scroll_direction = directionLabelToValue(v),
-        { values: ["上滑", "下滑"] }
-      );
-      this.size = [320, 250];
+      this.size = [300, 110];
     }
 
     function LoopStartNode() {
@@ -260,8 +245,6 @@ const graph = new LGraph();
       this.properties = {
         save_dir: "outputs/screenshots",
         clear_save_dir: false,
-        stitch_scroll: true,
-        max_overlap_px: 300,
         cleanup_remote: true
       };
       makeIO(this, true);
@@ -281,10 +264,8 @@ const graph = new LGraph();
         }
         if (this.widgets && this.widgets[1]) this.widgets[1].value = this.properties.clear_save_dir;
       });
-      this.addWidget("toggle", "拼接长图", this.properties.stitch_scroll, (v) => this.properties.stitch_scroll = !!v);
-      this.addWidget("number", "最大重叠像素", this.properties.max_overlap_px, (v) => this.properties.max_overlap_px = Number(v));
       this.addWidget("toggle", "清理手机临时图(建议开启)", this.properties.cleanup_remote, (v) => this.properties.cleanup_remote = !!v);
-      this.size = [320, 180];
+      this.size = [320, 140];
     }
 
     function OCRNode() {
@@ -292,7 +273,6 @@ const graph = new LGraph();
       this.properties = {
         languages: "ch_sim,en",
         gpu: false,
-        use_all_images: false,
         image_dir: "",
         regions: JSON.stringify(
           [
@@ -306,12 +286,11 @@ const graph = new LGraph();
       makeIO(this, true);
       this.addWidget("text", "识别语言", this.properties.languages, (v) => this.properties.languages = v);
       this.addWidget("toggle", "启用显卡加速", this.properties.gpu, (v) => this.properties.gpu = !!v);
-      this.addWidget("toggle", "识别全部图片", this.properties.use_all_images, (v) => this.properties.use_all_images = !!v);
       this.addWidget("text", "图片文件夹", this.properties.image_dir, (v) => this.properties.image_dir = v);
       this.addWidget("button", "打开图片文件位置", "", () => openOcrImageLocation(this));
       this.addWidget("button", "编辑识别区域(多行)", "", () => openRegionsEditor(this));
       this.__regionsPreviewWidget = this.addWidget("text", "区域摘要", buildRegionsPreview(this.properties.regions), () => {});
-      this.size = [360, 240];
+      this.size = [360, 210];
     }
 
     function ExcelNode() {
@@ -762,24 +741,17 @@ const graph = new LGraph();
       } else if (ct === "Screenshot") {
         if (widgets[0]) widgets[0].value = node.properties.remote_dir || "/sdcard/adbflow";
         if (widgets[1]) widgets[1].value = node.properties.prefix || "capture";
-        if (widgets[2]) widgets[2].value = !!node.properties.scroll;
-        if (widgets[3]) widgets[3].value = Number(node.properties.scroll_count ?? 3);
-        if (widgets[4]) widgets[4].value = Number(node.properties.scroll_distance_px ?? 120);
-        if (widgets[5]) widgets[5].value = directionValueToLabel(node.properties.scroll_direction || "up");
       } else if (ct === "LoopStart") {
         if (widgets[0]) widgets[0].value = Number(node.properties.loop_count ?? 5);
         if (widgets[1]) widgets[1].value = Number(node.properties.loop_start_wait_sec ?? 0.6);
       } else if (ct === "PullToPC") {
         if (widgets[0]) widgets[0].value = node.properties.save_dir || "outputs/screenshots";
         if (widgets[1]) widgets[1].value = !!node.properties.clear_save_dir;
-        if (widgets[2]) widgets[2].value = !!node.properties.stitch_scroll;
-        if (widgets[3]) widgets[3].value = Number(node.properties.max_overlap_px ?? 300);
-        if (widgets[4]) widgets[4].value = node.properties.cleanup_remote !== false;
+        if (widgets[2]) widgets[2].value = node.properties.cleanup_remote !== false;
       } else if (ct === "EasyOCR") {
         if (widgets[0]) widgets[0].value = node.properties.languages || "ch_sim,en";
         if (widgets[1]) widgets[1].value = !!node.properties.gpu;
-        if (widgets[2]) widgets[2].value = !!node.properties.use_all_images;
-        if (widgets[3]) widgets[3].value = node.properties.image_dir || "";
+        if (widgets[2]) widgets[2].value = node.properties.image_dir || "";
         syncOcrRegionsPreview(node);
       } else if (ct === "ExportExcel") {
         if (widgets[0]) widgets[0].value = node.properties.output_path || "outputs/docs/ocr_result.xlsx";
@@ -813,6 +785,8 @@ const graph = new LGraph();
           else inputs.x = xNum;
           if (!Number.isFinite(yNum)) delete inputs.y;
           else inputs.y = yNum;
+        } else if (classType === "EasyOCR") {
+          delete inputs.use_all_images;
         }
         const inputPort = node.inputs && node.inputs[0];
         if (inputPort && inputPort.link != null) {
@@ -1102,52 +1076,56 @@ const graph = new LGraph();
       let buffer = "";
       let finalResult = null;
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-        let nl = buffer.indexOf("\n");
-        while (nl >= 0) {
-          const line = buffer.slice(0, nl).trim();
-          buffer = buffer.slice(nl + 1);
-          if (line) {
-            const msg = JSON.parse(line);
-            if (msg.type === "log") {
-              log(String(msg.line || ""));
-            } else if (msg.type === "event") {
-              handleRunEventMessage(msg);
-            } else if (msg.type === "error") {
-              throw new Error(String(msg.error || "执行失败"));
-            } else if (msg.type === "result") {
-              finalResult = {
-                outputs: msg.outputs || {},
-                logs: msg.logs || [],
-                report_path: msg.report_path || ""
-              };
+          let nl = buffer.indexOf("\n");
+          while (nl >= 0) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (line) {
+              const msg = JSON.parse(line);
+              if (msg.type === "log") {
+                log(String(msg.line || ""));
+              } else if (msg.type === "event") {
+                handleRunEventMessage(msg);
+              } else if (msg.type === "error") {
+                throw new Error(String(msg.error || "执行失败"));
+              } else if (msg.type === "result") {
+                finalResult = {
+                  outputs: msg.outputs || {},
+                  logs: msg.logs || [],
+                  report_path: msg.report_path || ""
+                };
+              }
             }
+            nl = buffer.indexOf("\n");
           }
-          nl = buffer.indexOf("\n");
         }
-      }
 
-      const tail = buffer.trim();
-      if (tail) {
-        const msg = JSON.parse(tail);
-        if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
-        if (msg.type === "result") {
-          finalResult = {
-            outputs: msg.outputs || {},
-            logs: msg.logs || [],
-            report_path: msg.report_path || ""
-          };
+        const tail = buffer.trim();
+        if (tail) {
+          const msg = JSON.parse(tail);
+          if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
+          if (msg.type === "result") {
+            finalResult = {
+              outputs: msg.outputs || {},
+              logs: msg.logs || [],
+              report_path: msg.report_path || ""
+            };
+          }
         }
-      }
 
-      if (!finalResult) {
-        throw new Error("执行流未返回结果");
+        if (!finalResult) {
+          throw new Error("执行流未返回结果");
+        }
+        return finalResult;
+      } finally {
+        try { await reader.cancel(); } catch (_) {}
       }
-      return finalResult;
     }
 
     async function runWorkflow() {
@@ -1725,52 +1703,56 @@ const graph = new LGraph();
       let buffer = "";
       let finalResult = null;
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-        let nl = buffer.indexOf("\n");
-        while (nl >= 0) {
-          const line = buffer.slice(0, nl).trim();
-          buffer = buffer.slice(nl + 1);
-          if (line) {
-            const msg = JSON.parse(line);
-            if (msg.type === "log") {
-              log(String(msg.line || ""));
-            } else if (msg.type === "event") {
-              handleRunEventMessage(msg);
-            } else if (msg.type === "error") {
-              throw new Error(String(msg.error || "执行失败"));
-            } else if (msg.type === "result") {
-              finalResult = {
-                outputs: msg.outputs || {},
-                logs: msg.logs || [],
-                report_path: msg.report_path || ""
-              };
+          let nl = buffer.indexOf("\n");
+          while (nl >= 0) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (line) {
+              const msg = JSON.parse(line);
+              if (msg.type === "log") {
+                log(String(msg.line || ""));
+              } else if (msg.type === "event") {
+                handleRunEventMessage(msg);
+              } else if (msg.type === "error") {
+                throw new Error(String(msg.error || "执行失败"));
+              } else if (msg.type === "result") {
+                finalResult = {
+                  outputs: msg.outputs || {},
+                  logs: msg.logs || [],
+                  report_path: msg.report_path || ""
+                };
+              }
             }
+            nl = buffer.indexOf("\n");
           }
-          nl = buffer.indexOf("\n");
         }
-      }
 
-      const tail = buffer.trim();
-      if (tail) {
-        const msg = JSON.parse(tail);
-        if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
-        if (msg.type === "result") {
-          finalResult = {
-            outputs: msg.outputs || {},
-            logs: msg.logs || [],
-            report_path: msg.report_path || ""
-          };
+        const tail = buffer.trim();
+        if (tail) {
+          const msg = JSON.parse(tail);
+          if (msg.type === "error") throw new Error(String(msg.error || "执行失败"));
+          if (msg.type === "result") {
+            finalResult = {
+              outputs: msg.outputs || {},
+              logs: msg.logs || [],
+              report_path: msg.report_path || ""
+            };
+          }
         }
-      }
 
-      if (!finalResult) {
-        throw new Error("执行流未返回结果");
+        if (!finalResult) {
+          throw new Error("执行流未返回结果");
+        }
+        return finalResult;
+      } finally {
+        try { await reader.cancel(); } catch (_) {}
       }
-      return finalResult;
     }
 
     async function deleteScheduleItem(scheduleId) {
@@ -2504,6 +2486,7 @@ const graph = new LGraph();
       tapPicker.node = node || null;
       tapPicker.image = null;
       tapPicker.imageName = "";
+      tapPicker.tempCaptureToken = "";
       tapPicker.scale = 1;
       tapPicker.offsetX = 0;
       tapPicker.offsetY = 0;
@@ -2523,15 +2506,19 @@ const graph = new LGraph();
       if (modal) modal.classList.remove("hidden");
       resizeTapPickerCanvas();
       drawTapPickerCanvas();
-      setStatus("请上传图片并点击目标位置获取 x,y 坐标");
+      setStatus("请上传图片或捕捉手机屏幕，然后点击目标位置获取 x,y 坐标");
     }
 
-    function closeTapPicker() {
+    async function closeTapPicker() {
+      await cleanupTapPickerCapturedImage();
+      tapPicker.image = null;
+      tapPicker.imageName = "";
       const modal = document.getElementById("tap-picker-modal");
       if (modal) modal.classList.add("hidden");
     }
 
-    function onTapPickerFileChange(event) {
+    async function onTapPickerFileChange(event) {
+      await cleanupTapPickerCapturedImage();
       const file = event.target && event.target.files ? event.target.files[0] : null;
       if (!file) return;
       const reader = new FileReader();
@@ -2548,6 +2535,68 @@ const graph = new LGraph();
         img.src = String(reader.result || "");
       };
       reader.readAsDataURL(file);
+    }
+
+    function findPreferredTapPickerDeviceId() {
+      const nodes = graph && graph._nodes ? graph._nodes : [];
+      const startNodes = nodes.filter((n) => n && CLASS_MAP[n.type] === "StartDevice");
+      for (const node of startNodes) {
+        const deviceId = String((node.properties && node.properties.device_id) || "").trim();
+        if (deviceId) return deviceId;
+      }
+      return "";
+    }
+
+    async function cleanupTapPickerCapturedImage() {
+      const token = String(tapPicker.tempCaptureToken || "").trim();
+      tapPicker.tempCaptureToken = "";
+      if (!token) return;
+      try {
+        await fetch("/api/tap-picker/cleanup-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+      } catch (_err) {
+      }
+    }
+
+    async function captureTapPickerScreen() {
+      try {
+        setStatus("正在捕捉手机屏幕...");
+        const deviceId = findPreferredTapPickerDeviceId();
+        const res = await fetch("/api/tap-picker/capture-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: deviceId })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "捕捉失败");
+
+        await cleanupTapPickerCapturedImage();
+        tapPicker.tempCaptureToken = String(data.token || "");
+
+        const src = String(data.image_data_url || "");
+        if (!src) throw new Error("截图数据为空");
+
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            tapPicker.image = img;
+            tapPicker.imageName = String(data.image_name || "手机截图");
+            resizeTapPickerCanvas();
+            drawTapPickerCanvas();
+            updateTapPickerImageInfo();
+            resolve();
+          };
+          img.onerror = () => reject(new Error("截图加载失败"));
+          img.src = src;
+        });
+        setStatus("已捕捉手机屏幕，请点击图片选择坐标");
+      } catch (err) {
+        log("捕捉手机屏幕失败: " + err.message);
+        setStatus("捕捉手机屏幕失败");
+      }
     }
 
     function resizeTapPickerCanvas() {
@@ -2708,6 +2757,7 @@ const graph = new LGraph();
       swipePicker.node = node || null;
       swipePicker.image = null;
       swipePicker.imageName = "";
+      swipePicker.tempCaptureToken = "";
       swipePicker.scale = 1;
       swipePicker.offsetX = 0;
       swipePicker.offsetY = 0;
@@ -2722,15 +2772,19 @@ const graph = new LGraph();
       updateSwipePickerInfo();
       resizeSwipePickerCanvas();
       drawSwipePickerCanvas();
-      setStatus("请上传截图，依次点击起点和终点");
+      setStatus("请上传截图或捕捉手机屏幕，依次点击起点和终点");
     }
 
-    function closeSwipePicker() {
+    async function closeSwipePicker() {
+      await cleanupSwipePickerCapturedImage();
+      swipePicker.image = null;
+      swipePicker.imageName = "";
       const modal = document.getElementById("swipe-picker-modal");
       if (modal) modal.classList.add("hidden");
     }
 
-    function onSwipePickerFileChange(event) {
+    async function onSwipePickerFileChange(event) {
+      await cleanupSwipePickerCapturedImage();
       const file = event.target && event.target.files ? event.target.files[0] : null;
       if (!file) return;
       const reader = new FileReader();
@@ -2750,6 +2804,62 @@ const graph = new LGraph();
         img.src = String(reader.result || "");
       };
       reader.readAsDataURL(file);
+    }
+
+    async function cleanupSwipePickerCapturedImage() {
+      const token = String(swipePicker.tempCaptureToken || "").trim();
+      swipePicker.tempCaptureToken = "";
+      if (!token) return;
+      try {
+        await fetch("/api/tap-picker/cleanup-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+      } catch (_err) {
+      }
+    }
+
+    async function captureSwipePickerScreen() {
+      try {
+        setStatus("正在捕捉手机屏幕...");
+        const deviceId = findPreferredTapPickerDeviceId();
+        const res = await fetch("/api/tap-picker/capture-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: deviceId })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "捕捉失败");
+
+        await cleanupSwipePickerCapturedImage();
+        swipePicker.tempCaptureToken = String(data.token || "");
+
+        const src = String(data.image_data_url || "");
+        if (!src) throw new Error("截图数据为空");
+
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            swipePicker.image = img;
+            swipePicker.imageName = String(data.image_name || "手机截图");
+            swipePicker.startX = null;
+            swipePicker.startY = null;
+            swipePicker.endX = null;
+            swipePicker.endY = null;
+            resizeSwipePickerCanvas();
+            drawSwipePickerCanvas();
+            updateSwipePickerInfo();
+            resolve();
+          };
+          img.onerror = () => reject(new Error("截图加载失败"));
+          img.src = src;
+        });
+        setStatus("已捕捉手机屏幕，请依次点击起点和终点");
+      } catch (err) {
+        log("捕捉手机屏幕失败: " + err.message);
+        setStatus("捕捉手机屏幕失败");
+      }
     }
 
     function resizeSwipePickerCanvas() {

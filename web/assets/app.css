@@ -869,10 +869,11 @@
       color: #aeb4bf;
       gap: 8px;
     }
-    .helper-canvas-wrap {
-      min-height: 0;
-      padding: 8px;
-    }
+.helper-canvas-wrap {
+  min-height: 0;
+  padding: 8px;
+  overflow: hidden;
+}
     .helper-canvas {
       width: 100%;
       height: 100%;
@@ -951,21 +952,40 @@
       gap: 8px;
       justify-content: flex-end;
     }
-    .tap-picker-layout {
-      grid-template-columns: minmax(420px, 1fr) 260px;
-      min-height: 420px;
-      height: 62vh;
-    }
-    .tap-picker-right {
-      grid-template-rows: auto auto 1fr auto;
-    }
-    .tap-picker-canvas {
-      cursor: crosshair;
-    }
-    .tap-picker-right .helper-empty {
-      padding: 8px;
-      line-height: 1.6;
-    }
+.tap-picker-layout {
+  grid-template-columns: minmax(420px, 1fr) 260px;
+  min-height: 0;
+  height: min(62vh, 540px);
+}
+.tap-picker-right {
+  grid-template-rows: auto auto 1fr auto;
+}
+.tap-picker-layout .helper-left {
+  min-height: 0;
+}
+.tap-picker-layout .helper-canvas-wrap {
+  min-height: 0;
+  overflow: hidden;
+}
+.tap-picker-layout .helper-canvas {
+  min-height: 0;
+  height: 100%;
+}
+.swipe-picker-right {
+  grid-template-rows: auto auto 1fr;
+}
+.swipe-picker-bottom {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+.tap-picker-canvas {
+  cursor: crosshair;
+}
+.tap-picker-right .helper-empty {
+  padding: 8px;
+  line-height: 1.6;
+}
     .image-lightbox-panel {
       width: min(94vw, 1400px);
       max-height: 94vh;
