@@ -27,6 +27,7 @@ NODE_CONTRACTS: dict[str, NodeSpec] = {
             "input": FieldSpec("link", None),
             "x": FieldSpec("int", 540),
             "y": FieldSpec("int", 1600),
+            "post_wait_sec": FieldSpec("float", 0.0),
         }
     ),
     "Swipe": NodeSpec(
@@ -41,6 +42,7 @@ NODE_CONTRACTS: dict[str, NodeSpec] = {
             "y1": FieldSpec("nullable_number", None),
             "x2": FieldSpec("nullable_number", None),
             "y2": FieldSpec("nullable_number", None),
+            "post_wait_sec": FieldSpec("float", 0.0),
         }
     ),
     "Wait": NodeSpec(
@@ -61,6 +63,7 @@ NODE_CONTRACTS: dict[str, NodeSpec] = {
             "input": FieldSpec("link", None),
             "remote_dir": FieldSpec("str", "/sdcard/adbflow"),
             "prefix": FieldSpec("str", "capture"),
+            "post_wait_sec": FieldSpec("float", 0.0),
         },
         deprecated_fields=(
             "scroll",
@@ -173,15 +176,24 @@ def normalize_workflow(workflow: Any) -> tuple[dict[str, Any], list[str]]:
 
         node_inputs: dict[str, Any] = {}
         for name, field_spec in spec.fields.items():
-            if name in raw_inputs:
+            resolved_val, migrated_from = _resolve_field_value_with_migration(
+                class_type=class_type,
+                field_name=name,
+                raw_inputs=raw_inputs,
+            )
+            if resolved_val is not None:
                 node_inputs[name] = _coerce_field(
-                    raw_inputs[name],
+                    resolved_val,
                     field_spec=field_spec,
                     node_id=node_key,
                     class_type=class_type,
                     field_name=name,
                     warnings=warnings,
                 )
+                if migrated_from:
+                    warnings.append(
+                        f"节点 {node_key}（{class_type}）字段 {migrated_from} 已迁移到 {name}"
+                    )
             elif field_spec.default is not None:
                 node_inputs[name] = _clone_default(field_spec.default)
 
@@ -255,6 +267,29 @@ def _coerce_field(
         )
         return None
     return value
+
+
+def _resolve_field_value_with_migration(
+    *,
+    class_type: str,
+    field_name: str,
+    raw_inputs: dict[str, Any],
+) -> tuple[Any | None, str]:
+    if field_name in raw_inputs:
+        return raw_inputs[field_name], ""
+    if field_name != "post_wait_sec":
+        return None, ""
+
+    aliases_map: dict[str, tuple[str, ...]] = {
+        "Tap": ("wait_sec", "tap_wait_sec", "after_wait_sec"),
+        "Swipe": ("wait_sec", "swipe_wait_sec", "after_wait_sec"),
+        "Screenshot": ("capture_pause_sec", "wait_sec", "screenshot_wait_sec", "after_wait_sec"),
+    }
+    aliases = aliases_map.get(class_type, ())
+    for alias in aliases:
+        if alias in raw_inputs:
+            return raw_inputs.get(alias), alias
+    return None, ""
 
 
 def _clone_default(value: Any) -> Any:

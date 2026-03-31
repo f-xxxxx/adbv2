@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -19,12 +21,27 @@ class CommandResult:
     stderr: str
 
 
+_ADB_RUN_SEMAPHORE = threading.BoundedSemaphore(value=2)
+
+
 def _run(cmd: list[str], *, text: bool = True, check: bool = True) -> CommandResult:
     timeout_sec = 25.0
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=text, check=False, timeout=timeout_sec)
-    except subprocess.TimeoutExpired as exc:
-        raise ADBError(f"命令执行超时（{timeout_sec}s）：{' '.join(cmd)}") from exc
+    max_attempts = 3
+    with _ADB_RUN_SEMAPHORE:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=text, check=False, timeout=timeout_sec)
+                break
+            except subprocess.TimeoutExpired as exc:
+                raise ADBError(f"命令执行超时（{timeout_sec}s）：{' '.join(cmd)}") from exc
+            except OSError as exc:
+                if exc.errno == 24 and attempt < max_attempts:
+                    # EMFILE: back off briefly and retry to survive FD burst under heavy loops.
+                    time.sleep(0.2 * attempt)
+                    continue
+                if exc.errno == 24:
+                    raise ADBError("系统文件句柄不足（Too many open files），请稍后重试或提高 ulimit -n。") from exc
+                raise
     result = CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
     if check and proc.returncode != 0:
         raise ADBError(f"命令执行失败：{' '.join(cmd)}\n{result.stderr.strip()}")
@@ -33,6 +50,10 @@ def _run(cmd: list[str], *, text: bool = True, check: bool = True) -> CommandRes
 
 class ADBClient:
     ADB_KEYBOARD_IME_ID = "com.android.adbkeyboard/.AdbIME"
+
+    def __init__(self) -> None:
+        self._ensured_remote_dirs: set[tuple[str, str]] = set()
+        self._ensured_remote_dirs_lock = threading.Lock()
 
     def list_devices(self) -> list[str]:
         out = _run(["adb", "devices"]).stdout.splitlines()
@@ -59,8 +80,21 @@ class ADBClient:
             raise ADBError(f"本地文件不存在：{src}")
         _run(["adb", "-s", device_id, "push", str(src), remote_path], check=True)
 
+    def ensure_remote_dir(self, device_id: str, remote_dir: str, *, force: bool = False) -> None:
+        normalized = str(remote_dir or "").strip()
+        if not normalized:
+            return
+        key = (str(device_id), normalized.rstrip("/"))
+        if not force:
+            with self._ensured_remote_dirs_lock:
+                if key in self._ensured_remote_dirs:
+                    return
+        self.shell(device_id, "mkdir", "-p", normalized)
+        with self._ensured_remote_dirs_lock:
+            self._ensured_remote_dirs.add(key)
+
     def mkdir(self, device_id: str, remote_dir: str) -> None:
-        self.shell(device_id, "mkdir", "-p", remote_dir)
+        self.ensure_remote_dir(device_id, remote_dir)
 
     def tap(self, device_id: str, x: int, y: int) -> None:
         self.shell(device_id, "input", "tap", str(x), str(y))
@@ -100,9 +134,10 @@ class ADBClient:
         safe_paths = [p for p in paths if p and p.startswith("/")]
         if not safe_paths:
             return
-        # Use direct `rm` per file to avoid `sh -c` quoting differences across devices.
-        for remote_path in safe_paths:
-            self.shell(device_id, "rm", "-f", remote_path)
+        chunk_size = 40
+        for idx in range(0, len(safe_paths), chunk_size):
+            chunk = safe_paths[idx : idx + chunk_size]
+            self.shell(device_id, "rm", "-f", *chunk)
 
     def input_text(self, device_id: str, text: str) -> str:
         raw = str(text or "")

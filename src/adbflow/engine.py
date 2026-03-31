@@ -127,6 +127,13 @@ class WorkflowEngine:
                     resolved_inputs=resolved_inputs,
                     ctx=ctx,
                 )
+                if class_type == "LoopStart":
+                    loop_count = self._as_loop_count(resolved_inputs.get("loop_count"), default=1)
+                    output = self._with_loop_meta(
+                        output,
+                        loop_iteration=1,
+                        loop_count=loop_count,
+                    )
         except WorkflowCancelledError:
             raise
         except (NodeExecutionError, Exception) as exc:
@@ -373,7 +380,11 @@ class WorkflowEngine:
         return max(0.0, parsed)
 
     @staticmethod
-    def _with_loop_meta(loop_state: Any, loop_iteration: int, loop_count: int) -> Any:
+    def _with_loop_meta(
+        loop_state: Any,
+        loop_iteration: int,
+        loop_count: int,
+    ) -> Any:
         if not isinstance(loop_state, dict):
             return loop_state
         next_state = {**loop_state}

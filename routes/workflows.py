@@ -24,15 +24,18 @@ from src.adbflow.error_codes import ErrorCode
 from src.adbflow.executor import CircuitOpenError, DuplicateExecutionError, ExecutionTimeoutError, QueueBusyError
 from src.adbflow.nodes import NodeExecutionError, WorkflowCancelledError
 from src.adbflow.observability import log_event, new_run_id
-from src.adbflow.persistence import insert_node_event, insert_run
+from src.adbflow.persistence import insert_run
 from src.adbflow.workflow_contract import normalize_workflow, schema_public
 
 workflows_bp = Blueprint("workflows", __name__)
+_STREAM_EVENT_QUEUE_SIZE = 1024
 
 
 class _RunEventCtx:
     def __init__(self) -> None:
         self._start_by_node: dict[str, float] = {}
+        self._pending_events: list[dict[str, object]] = []
+        self._last_flush_at = time.time()
         self._lock = threading.Lock()
 
     def mark_start(self, node_id: str, ts: float) -> None:
@@ -42,6 +45,25 @@ class _RunEventCtx:
     def pop_start(self, node_id: str) -> float | None:
         with self._lock:
             return self._start_by_node.pop(str(node_id), None)
+
+    def append_event(self, item: dict[str, object]) -> int:
+        with self._lock:
+            self._pending_events.append(item)
+            return len(self._pending_events)
+
+    def should_flush_by_time(self, interval_sec: float = 1.0) -> bool:
+        with self._lock:
+            return (time.time() - self._last_flush_at) >= max(0.1, float(interval_sec))
+
+    def pop_pending_events(self) -> list[dict[str, object]]:
+        with self._lock:
+            if not self._pending_events:
+                self._last_flush_at = time.time()
+                return []
+            events = self._pending_events
+            self._pending_events = []
+            self._last_flush_at = time.time()
+            return events
 
 
 def _record_engine_event(run_id: str, evt: dict[str, object], event_ctx: _RunEventCtx) -> None:
@@ -58,15 +80,20 @@ def _record_engine_event(run_id: str, evt: dict[str, object], event_ctx: _RunEve
         if started is not None:
             duration_ms = max(0.0, (now - started) * 1000.0)
 
-    insert_node_event(
-        run_id=run_id,
-        node_id=node_id,
-        class_type=class_type,
-        event=event_name or "unknown",
-        ts=now,
-        duration_ms=duration_ms,
-        payload={k: v for k, v in evt.items() if k != "event"},
+    pending_size = event_ctx.append_event(
+        {
+            "run_id": run_id,
+            "schedule_id": "",
+            "node_id": node_id,
+            "class_type": class_type,
+            "event": event_name or "unknown",
+            "ts": now,
+            "duration_ms": duration_ms,
+            "payload": {k: v for k, v in evt.items() if k != "event"},
+        }
     )
+    if pending_size >= 30 or event_ctx.should_flush_by_time(1.0):
+        _flush_run_events(event_ctx)
     log_event(
         "workflow_node_event",
         run_id=run_id,
@@ -75,6 +102,41 @@ def _record_engine_event(run_id: str, evt: dict[str, object], event_ctx: _RunEve
         node_event=event_name,
         duration_ms=round(duration_ms, 2) if duration_ms is not None else None,
     )
+
+
+def _flush_run_events(event_ctx: _RunEventCtx) -> None:
+    from src.adbflow.persistence import insert_node_events_bulk
+
+    pending = event_ctx.pop_pending_events()
+    if not pending:
+        return
+    insert_node_events_bulk(pending)
+
+
+def _queue_put_nowait_safe(
+    q: queue.Queue[dict[str, object] | None],
+    item: dict[str, object] | None,
+    *,
+    drop_counter: dict[str, int] | None = None,
+    drop_key: str = "dropped",
+) -> bool:
+    try:
+        q.put_nowait(item)
+        return True
+    except queue.Full:
+        if drop_counter is not None:
+            drop_counter[drop_key] = int(drop_counter.get(drop_key, 0)) + 1
+        return False
+
+
+def _queue_force_close_signal(q: queue.Queue[dict[str, object] | None]) -> None:
+    while True:
+        if _queue_put_nowait_safe(q, None):
+            return
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            continue
 
 
 @workflows_bp.get("/")
@@ -185,6 +247,7 @@ def run_workflow():
         )
         return err(f"未预期异常：{exc}", ErrorCode.INTERNAL_ERROR, 500)
     finally:
+        _flush_run_events(event_ctx)
         _end_manual_run()
 
     return jsonify(
@@ -218,18 +281,29 @@ def run_workflow_stream():
     prepared_workflow = _prepare_workflow_export_paths(normalized_workflow, trigger="manual")
     run_id = new_run_id("man")
 
-    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=_STREAM_EVENT_QUEUE_SIZE)
     result_holder: dict[str, ExecutionResult] = {}
     error_holder: dict[str, str] = {}
+    dropped_events: dict[str, int] = {"log": 0, "event": 0}
 
     def on_log(line: str) -> None:
-        event_queue.put({"type": "log", "line": line})
+        _queue_put_nowait_safe(
+            event_queue,
+            {"type": "log", "line": line},
+            drop_counter=dropped_events,
+            drop_key="log",
+        )
 
     event_ctx = _RunEventCtx()
 
     def on_event(evt: dict[str, object]) -> None:
         _record_engine_event(run_id=run_id, evt=evt, event_ctx=event_ctx)
-        event_queue.put({"type": "event", **evt})
+        _queue_put_nowait_safe(
+            event_queue,
+            {"type": "event", **evt},
+            drop_counter=dropped_events,
+            drop_key="event",
+        )
 
     started = time.time()
     insert_run(
@@ -322,8 +396,25 @@ def run_workflow_stream():
                 error_code=ErrorCode.INTERNAL_ERROR,
             )
         finally:
+            _flush_run_events(event_ctx)
             _end_manual_run()
-            event_queue.put(None)
+            dropped_log = int(dropped_events.get("log", 0))
+            dropped_evt = int(dropped_events.get("event", 0))
+            if dropped_log or dropped_evt:
+                _queue_put_nowait_safe(
+                    event_queue,
+                    {
+                        "type": "log",
+                        "line": f"[流式输出] 队列拥塞，已丢弃日志 {dropped_log} 条、事件 {dropped_evt} 条",
+                    },
+                )
+                log_event(
+                    "stream_queue_dropped",
+                    run_id=run_id,
+                    dropped_log=dropped_log,
+                    dropped_event=dropped_evt,
+                )
+            _queue_force_close_signal(event_queue)
 
     threading.Thread(target=worker, daemon=True).start()
 

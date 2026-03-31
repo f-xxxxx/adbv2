@@ -13,7 +13,8 @@
         0
       ],
       "x": 600,
-      "y": 1520
+      "y": 1520,
+      "post_wait_sec": 1.0
     }
   },
   "3": {
@@ -30,7 +31,8 @@
       "scroll_direction": "up",
       "swipe_duration_ms": 300,
       "swipe_pause_sec": 0.8,
-      "capture_pause_sec": 0.2
+      "capture_pause_sec": 0.2,
+      "post_wait_sec": 1.0
     }
   },
   "4": {
@@ -58,4 +60,3 @@
     }
   }
 }
-

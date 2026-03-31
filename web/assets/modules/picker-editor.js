@@ -283,8 +283,12 @@
       tapPicker.node.properties.x = Math.round(tapPicker.selectedX);
       tapPicker.node.properties.y = Math.round(tapPicker.selectedY);
       const widgets = tapPicker.node.widgets || [];
-      if (widgets[0]) widgets[0].value = tapPicker.node.properties.x;
-      if (widgets[1]) widgets[1].value = tapPicker.node.properties.y;
+      const wx = widgets.find((w) => String((w && w.name) || "") === "横坐标");
+      const wy = widgets.find((w) => String((w && w.name) || "") === "纵坐标");
+      if (wx) wx.value = tapPicker.node.properties.x;
+      else if (widgets[0]) widgets[0].value = tapPicker.node.properties.x;
+      if (wy) wy.value = tapPicker.node.properties.y;
+      else if (widgets[1]) widgets[1].value = tapPicker.node.properties.y;
       if (typeof markCanvasDirty === "function") markCanvasDirty();
       if (typeof setStatus === "function") setStatus(`已写入点击坐标 (${tapPicker.node.properties.x}, ${tapPicker.node.properties.y})`);
       closeTapPicker();
@@ -559,10 +563,16 @@
       swipePicker.node.properties.distance_px = distancePx;
       swipePicker.node.properties.x = swipePicker.startX;
       swipePicker.node.properties.y = swipePicker.startY;
-      if (widgets[0]) widgets[0].value = directionValueToLabel(direction);
-      if (widgets[2]) widgets[2].value = distancePx;
-      if (widgets[3]) widgets[3].value = String(swipePicker.startX);
-      if (widgets[4]) widgets[4].value = String(swipePicker.startY);
+      const wDirection = widgets.find((w) => String((w && w.name) || "") === "滑动方向");
+      const wDistance = widgets.find((w) => String((w && w.name) || "") === "滑动像素");
+      const wX = widgets.find((w) => String((w && w.name) || "") === "起点X(可选)");
+      const wY = widgets.find((w) => String((w && w.name) || "") === "起点Y(可选)");
+      if (wDirection) wDirection.value = directionValueToLabel(direction);
+      else if (widgets[0]) widgets[0].value = directionValueToLabel(direction);
+      if (wDistance) wDistance.value = distancePx;
+      else if (widgets[2]) widgets[2].value = distancePx;
+      if (wX) wX.value = String(swipePicker.startX);
+      if (wY) wY.value = String(swipePicker.startY);
       if (typeof markCanvasDirty === "function") markCanvasDirty();
       if (typeof setStatus === "function") {
         setStatus(`已写入滑动配置：方向=${directionValueToLabel(direction)}，像素=${distancePx}`);

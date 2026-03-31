@@ -24,24 +24,15 @@
         0
       ],
       "x": 600,
-      "y": 1520
+      "y": 1520,
+      "post_wait_sec": 1.0
     }
   },
   "4": {
-    "class_type": "Wait",
-    "inputs": {
-      "input": [
-        "3",
-        0
-      ],
-      "duration_sec": 1.0
-    }
-  },
-  "5": {
     "class_type": "Screenshot",
     "inputs": {
       "input": [
-        "4",
+        "3",
         0
       ],
       "remote_dir": "/sdcard/adbflow",
@@ -52,56 +43,49 @@
       "scroll_direction": "up",
       "swipe_duration_ms": 180,
       "swipe_pause_sec": 0.8,
-      "capture_pause_sec": 0.2
+      "capture_pause_sec": 0.2,
+      "post_wait_sec": 1.0
+    }
+  },
+  "5": {
+    "class_type": "Tap",
+    "inputs": {
+      "input": [
+        "4",
+        0
+      ],
+      "x": 120,
+      "y": 228,
+      "post_wait_sec": 1.0
     }
   },
   "6": {
-    "class_type": "Tap",
+    "class_type": "Swipe",
     "inputs": {
       "input": [
         "5",
         0
       ],
-      "x": 120,
-      "y": 228
+      "direction": "up",
+      "distance_px": 80,
+      "duration_ms": 180,
+      "post_wait_sec": 1.0
     }
   },
   "7": {
-    "class_type": "Wait",
+    "class_type": "LoopEnd",
     "inputs": {
       "input": [
         "6",
         0
-      ],
-      "duration_sec": 0.6
-    }
-  },
-  "8": {
-    "class_type": "Swipe",
-    "inputs": {
-      "input": [
-        "7",
-        0
-      ],
-      "direction": "up",
-      "distance_px": 80,
-      "duration_ms": 180
-    }
-  },
-  "9": {
-    "class_type": "LoopEnd",
-    "inputs": {
-      "input": [
-        "8",
-        0
       ]
     }
   },
-  "10": {
+  "8": {
     "class_type": "PullToPC",
     "inputs": {
       "input": [
-        "9",
+        "7",
         0
       ],
       "save_dir": "outputs/screenshots",
@@ -110,11 +94,11 @@
       "cleanup_remote": true
     }
   },
-  "11": {
+  "9": {
     "class_type": "EasyOCR",
     "inputs": {
       "input": [
-        "10",
+        "8",
         0
       ],
       "languages": "ch_sim,en",
@@ -146,7 +130,7 @@
       ]
     }
   },
-  "12": {
+  "10": {
     "class_type": "ExportExcel",
     "inputs": {
       "output_path": "outputs/docs/ocr_loop_result.xlsx",
@@ -157,16 +141,16 @@
       ],
       "invalid_data_key": "姓名",
       "input": [
-        "11",
+        "9",
         0
       ]
     }
   },
-  "13": {
+  "11": {
     "class_type": "PreviewExcel",
     "inputs": {
       "input": [
-        "12",
+        "10",
         0
       ],
       "max_rows": 10

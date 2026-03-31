@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import sys
 
 from flask import Flask
 
@@ -18,6 +19,21 @@ app.register_blueprint(utils_bp)
 setup_logging()
 
 
+def _try_raise_fd_limit() -> None:
+    if sys.platform != "darwin":
+        return
+    try:
+        import resource  # type: ignore
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target_soft = min(max(soft, 8192), hard)
+        if target_soft > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target_soft, hard))
+    except Exception:
+        # Best-effort only; keep startup robust.
+        pass
+
+
 def _warmup_ocr() -> None:
     from src.adbflow.nodes import get_ocr_reader
 
@@ -31,6 +47,7 @@ def _warmup_ocr() -> None:
 
 
 _warmup_ocr()
+_try_raise_fd_limit()
 _ensure_scheduler_started()
 start_tmp_cleanup_daemon(OUTPUTS_DIR / "tmp", interval_sec=600, ttl_sec=3600)
 

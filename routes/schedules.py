@@ -39,7 +39,6 @@ from src.adbflow.error_codes import ErrorCode
 from src.adbflow.executor import CircuitOpenError, DuplicateExecutionError, ExecutionTimeoutError, QueueBusyError
 from src.adbflow.observability import log_event, new_run_id
 from src.adbflow.persistence import (
-    insert_node_event,
     insert_run,
     load_schedules as db_load_schedules,
     replace_schedules as db_replace_schedules,
@@ -47,6 +46,7 @@ from src.adbflow.persistence import (
 from src.adbflow.workflow_contract import normalize_workflow
 
 schedules_bp = Blueprint("schedules", __name__)
+_STREAM_EVENT_QUEUE_SIZE = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -243,14 +243,36 @@ def run_schedule_now_stream():
     cancel_event = threading.Event()
     _set_schedule_cancel_event(cancel_event)
 
-    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=_STREAM_EVENT_QUEUE_SIZE)
     result_holder: dict[str, object] = {}
     error_holder: dict[str, str] = {}
+    dropped_events: dict[str, int] = {"log": 0, "event": 0}
 
     event_ctx = _RunEventCtx()
 
+    def _queue_put_nowait_safe(
+        item: dict[str, object] | None,
+        *,
+        drop_key: str = "event",
+    ) -> bool:
+        try:
+            event_queue.put_nowait(item)
+            return True
+        except queue.Full:
+            dropped_events[drop_key] = int(dropped_events.get(drop_key, 0)) + 1
+            return False
+
+    def _queue_force_close_signal() -> None:
+        while True:
+            if _queue_put_nowait_safe(None):
+                return
+            try:
+                event_queue.get_nowait()
+            except queue.Empty:
+                continue
+
     def on_log(line: str) -> None:
-        event_queue.put({"type": "log", "line": line})
+        _queue_put_nowait_safe({"type": "log", "line": line}, drop_key="log")
 
     def on_event(evt: dict[str, object], run_id: str) -> None:
         _record_engine_event(
@@ -259,7 +281,7 @@ def run_schedule_now_stream():
             evt=evt,
             event_ctx=event_ctx,
         )
-        event_queue.put({"type": "event", **evt})
+        _queue_put_nowait_safe({"type": "event", **evt}, drop_key="event")
 
     def _run_single_batch(batch_no: int) -> tuple[bool, str, str, ExecutionResult | None, str, str]:
         """Run one batch and return (ok, err, err_code, result, report_path, run_id)."""
@@ -333,6 +355,8 @@ def run_schedule_now_stream():
             except Exception as exc:  # noqa: BLE001
                 b_err = str(exc)
                 b_err_code = ErrorCode.RUN_FAILED
+            finally:
+                _flush_run_events(event_ctx)
 
         rp = _write_execution_report(
             workflow=prepared_workflow if b_ok else {},
@@ -450,7 +474,24 @@ def run_schedule_now_stream():
         else:
             error_holder["error"] = last_err or "执行失败"
             error_holder["error_code"] = last_err_code or ErrorCode.RUN_FAILED
-        event_queue.put(None)
+        _flush_run_events(event_ctx)
+        dropped_log = int(dropped_events.get("log", 0))
+        dropped_evt = int(dropped_events.get("event", 0))
+        if dropped_log or dropped_evt:
+            _queue_put_nowait_safe(
+                {
+                    "type": "log",
+                    "line": f"[流式输出] 队列拥塞，已丢弃日志 {dropped_log} 条、事件 {dropped_evt} 条",
+                },
+                drop_key="log",
+            )
+            log_event(
+                "schedule_stream_queue_dropped",
+                schedule_id=schedule_id,
+                dropped_log=dropped_log,
+                dropped_event=dropped_evt,
+            )
+        _queue_force_close_signal()
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -522,6 +563,8 @@ def delete_schedule(schedule_id: str):
 class _RunEventCtx:
     def __init__(self) -> None:
         self._start_by_node: dict[str, float] = {}
+        self._pending_events: list[dict[str, object]] = []
+        self._last_flush_at = time.time()
         self._lock = threading.Lock()
 
     def mark_start(self, node_id: str, ts: float) -> None:
@@ -531,6 +574,25 @@ class _RunEventCtx:
     def pop_start(self, node_id: str) -> float | None:
         with self._lock:
             return self._start_by_node.pop(str(node_id), None)
+
+    def append_event(self, item: dict[str, object]) -> int:
+        with self._lock:
+            self._pending_events.append(item)
+            return len(self._pending_events)
+
+    def should_flush_by_time(self, interval_sec: float = 1.0) -> bool:
+        with self._lock:
+            return (time.time() - self._last_flush_at) >= max(0.1, float(interval_sec))
+
+    def pop_pending_events(self) -> list[dict[str, object]]:
+        with self._lock:
+            if not self._pending_events:
+                self._last_flush_at = time.time()
+                return []
+            events = self._pending_events
+            self._pending_events = []
+            self._last_flush_at = time.time()
+            return events
 
 
 def _record_engine_event(
@@ -552,16 +614,20 @@ def _record_engine_event(
         if started is not None:
             duration_ms = max(0.0, (now - started) * 1000.0)
 
-    insert_node_event(
-        run_id=run_id,
-        schedule_id=schedule_id,
-        node_id=node_id,
-        class_type=class_type,
-        event=event_name or "unknown",
-        ts=now,
-        duration_ms=duration_ms,
-        payload={k: v for k, v in evt.items() if k != "event"},
+    pending_size = event_ctx.append_event(
+        {
+            "run_id": run_id,
+            "schedule_id": schedule_id,
+            "node_id": node_id,
+            "class_type": class_type,
+            "event": event_name or "unknown",
+            "ts": now,
+            "duration_ms": duration_ms,
+            "payload": {k: v for k, v in evt.items() if k != "event"},
+        }
     )
+    if pending_size >= 30 or event_ctx.should_flush_by_time(1.0):
+        _flush_run_events(event_ctx)
     log_event(
         "workflow_node_event",
         run_id=run_id,
@@ -571,6 +637,15 @@ def _record_engine_event(
         node_event=event_name,
         duration_ms=round(duration_ms, 2) if duration_ms is not None else None,
     )
+
+
+def _flush_run_events(event_ctx: _RunEventCtx) -> None:
+    from src.adbflow.persistence import insert_node_events_bulk
+
+    pending = event_ctx.pop_pending_events()
+    if not pending:
+        return
+    insert_node_events_bulk(pending)
 
 
 def _sleep_with_cancel(cancel_event: threading.Event, seconds: float) -> bool:
@@ -826,6 +901,8 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
             err_code = ErrorCode.RUN_FAILED
+        finally:
+            _flush_run_events(event_ctx)
 
     report_path = _write_execution_report(
         workflow=workflow if ok else {},

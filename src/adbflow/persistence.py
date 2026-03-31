@@ -352,6 +352,60 @@ def insert_node_event(
             conn.commit()
 
 
+def insert_node_events_bulk(items: list[dict[str, Any]]) -> None:
+    if not items:
+        return
+    rows: list[tuple[str, str, str, str, float, float | None, str]] = []
+    now_ts = time.time()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        event_name = str(item.get("event", "")).strip()
+        if not event_name:
+            continue
+        ts_raw = item.get("ts", now_ts)
+        try:
+            event_ts = float(ts_raw)
+        except Exception:
+            event_ts = now_ts
+        duration_raw = item.get("duration_ms")
+        duration_ms: float | None
+        if duration_raw is None:
+            duration_ms = None
+        else:
+            try:
+                duration_ms = float(duration_raw)
+            except Exception:
+                duration_ms = None
+        payload_obj = item.get("payload")
+        payload_text = json.dumps(payload_obj if isinstance(payload_obj, dict) else {}, ensure_ascii=False)
+        rows.append(
+            (
+                str(item.get("run_id", "") or ""),
+                str(item.get("schedule_id", "") or ""),
+                str(item.get("node_id", "") or ""),
+                str(item.get("class_type", "") or ""),
+                event_name,
+                event_ts,
+                duration_ms,
+                payload_text,
+            )
+        )
+    if not rows:
+        return
+    with _DB_LOCK:
+        with _connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO node_events(
+                    run_id, schedule_id, node_id, class_type, event, ts, duration_ms, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+
+
 def health_summary() -> dict[str, Any]:
     started = time.time()
     with _DB_LOCK:

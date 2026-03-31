@@ -27,6 +27,8 @@ const graph = new LGraph();
     let schedulerRunning = false;
     let runtimeStatusTimer = null;
     let activeScheduleRunId = "";
+    let manualRunStreamAbortController = null;
+    let scheduleRunStreamAbortController = null;
     let allowAutoLoadScheduleOutcome = false;
     const executionProgress = {
       active: false,
@@ -596,6 +598,11 @@ const graph = new LGraph();
       node.properties = { ...(node.properties || {}), ...(props || {}) };
       const ct = node.__classType || "";
       const widgets = node.widgets || [];
+      const setWidgetByName = (name, value) => {
+        const w = widgets.find((it) => String(it && it.name || "") === String(name));
+        if (w) w.value = value;
+        return !!w;
+      };
 
       if (ct === "StartDevice") {
         if (widgets[0]) widgets[0].value = node.properties.device_id || "";
@@ -603,19 +610,22 @@ const graph = new LGraph();
         if (widgets[0]) widgets[0].value = inputChannelValueToLabel(node.properties.text_channel || "clipboard");
         if (widgets[1]) widgets[1].value = node.properties.text || "";
       } else if (ct === "Tap") {
-        if (widgets[0]) widgets[0].value = Number(node.properties.x ?? 540);
-        if (widgets[1]) widgets[1].value = Number(node.properties.y ?? 1600);
+        if (!setWidgetByName("横坐标", Number(node.properties.x ?? 540)) && widgets[0]) widgets[0].value = Number(node.properties.x ?? 540);
+        if (!setWidgetByName("纵坐标", Number(node.properties.y ?? 1600)) && widgets[1]) widgets[1].value = Number(node.properties.y ?? 1600);
+        setWidgetByName("动作后等待(秒)", Number(node.properties.post_wait_sec ?? 0));
       } else if (ct === "Swipe") {
-        if (widgets[0]) widgets[0].value = directionValueToLabel(node.properties.direction || "up");
-        if (widgets[1]) widgets[1].value = Number(node.properties.duration_ms ?? 350);
-        if (widgets[2]) widgets[2].value = Number(node.properties.distance_px ?? 420);
-        if (widgets[3]) widgets[3].value = node.properties.x == null ? "" : String(node.properties.x);
-        if (widgets[4]) widgets[4].value = node.properties.y == null ? "" : String(node.properties.y);
+        setWidgetByName("滑动方向", directionValueToLabel(node.properties.direction || "up"));
+        setWidgetByName("滑动时长(毫秒)", Number(node.properties.duration_ms ?? 350));
+        setWidgetByName("滑动像素", Number(node.properties.distance_px ?? 420));
+        setWidgetByName("动作后等待(秒)", Number(node.properties.post_wait_sec ?? 0));
+        setWidgetByName("起点X(可选)", node.properties.x == null ? "" : String(node.properties.x));
+        setWidgetByName("起点Y(可选)", node.properties.y == null ? "" : String(node.properties.y));
       } else if (ct === "Wait") {
         if (widgets[0]) widgets[0].value = Number(node.properties.duration_sec ?? 0.8);
       } else if (ct === "Screenshot") {
-        if (widgets[0]) widgets[0].value = node.properties.remote_dir || "/sdcard/adbflow";
-        if (widgets[1]) widgets[1].value = node.properties.prefix || "capture";
+        setWidgetByName("手机目录", node.properties.remote_dir || "/sdcard/adbflow");
+        setWidgetByName("文件名前缀", node.properties.prefix || "capture");
+        setWidgetByName("动作后等待(秒)", Number(node.properties.post_wait_sec ?? 0));
       } else if (ct === "LoopStart") {
         if (widgets[0]) widgets[0].value = Number(node.properties.loop_count ?? 5);
         if (widgets[1]) widgets[1].value = Number(node.properties.loop_start_wait_sec ?? 0.6);
@@ -830,6 +840,7 @@ const graph = new LGraph();
 
     async function cancelRunningWorkflow() {
       try {
+        abortActiveRunStreams();
         setStatus("正在发送停止信号...");
         const res = await fetch("/api/run-cancel", {
           method: "POST",
@@ -845,6 +856,19 @@ const graph = new LGraph();
         log("停止执行失败: " + err.message);
         setStatus("停止执行失败");
       }
+    }
+
+    function abortActiveRunStreams() {
+      const ctrls = [manualRunStreamAbortController, scheduleRunStreamAbortController];
+      for (const ctrl of ctrls) {
+        if (!ctrl) continue;
+        try {
+          ctrl.abort();
+        } catch (_err) {
+        }
+      }
+      manualRunStreamAbortController = null;
+      scheduleRunStreamAbortController = null;
     }
 
     function resetNodeProgressHighlight() {
@@ -947,47 +971,69 @@ const graph = new LGraph();
     }
 
     async function runWorkflowStream(workflow) {
-      const res = await fetch("/api/run-stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflow })
-      });
-
-      if (!res.ok) {
+      const controller = new AbortController();
+      manualRunStreamAbortController = controller;
+      try {
         try {
-          const data = await res.json();
-          const msg = data && data.error ? String(data.error) : "";
-          if (msg) throw new Error(msg);
+          var res = await fetch("/api/run-stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workflow }),
+            signal: controller.signal,
+          });
         } catch (err) {
-          if (err && err.message) throw err;
-          throw new Error(`执行失败（HTTP ${res.status}）`);
+          if (err && err.name === "AbortError") throw new Error("执行已取消");
+          throw err;
+        }
+
+        if (!res.ok) {
+          try {
+            const data = await res.json();
+            const msg = data && data.error ? String(data.error) : "";
+            if (msg) throw new Error(msg);
+          } catch (err) {
+            if (err && err.message) throw err;
+            throw new Error(`执行失败（HTTP ${res.status}）`);
+          }
+        }
+
+        if (!res.body || typeof res.body.getReader !== "function") {
+          const fallbackRes = await fetch("/api/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workflow }),
+            signal: controller.signal,
+          });
+          const fallbackData = await fallbackRes.json();
+          if (!fallbackData.ok) throw new Error(fallbackData.error || "执行失败");
+          for (const line of (fallbackData.logs || [])) log(line);
+          return {
+            outputs: fallbackData.outputs || {},
+            logs: fallbackData.logs || [],
+            report_path: fallbackData.report_path || "",
+            run_id: fallbackData.run_id || "",
+            migration_warnings: Array.isArray(fallbackData.migration_warnings) ? fallbackData.migration_warnings : []
+          };
+        }
+        if (_runControl.parseNdjsonStream) {
+          try {
+            return await _runControl.parseNdjsonStream(res, {
+              onLog: (line) => log(line),
+              onEvent: (evt) => handleRunEventMessage(evt),
+            });
+          } catch (err) {
+            if (controller.signal.aborted || (err && err.name === "AbortError")) {
+              throw new Error("执行已取消");
+            }
+            throw err;
+          }
+        }
+        throw new Error("运行模块未加载");
+      } finally {
+        if (manualRunStreamAbortController === controller) {
+          manualRunStreamAbortController = null;
         }
       }
-
-      if (!res.body || typeof res.body.getReader !== "function") {
-        const fallbackRes = await fetch("/api/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workflow })
-        });
-        const fallbackData = await fallbackRes.json();
-        if (!fallbackData.ok) throw new Error(fallbackData.error || "执行失败");
-        for (const line of (fallbackData.logs || [])) log(line);
-        return {
-          outputs: fallbackData.outputs || {},
-          logs: fallbackData.logs || [],
-          report_path: fallbackData.report_path || "",
-          run_id: fallbackData.run_id || "",
-          migration_warnings: Array.isArray(fallbackData.migration_warnings) ? fallbackData.migration_warnings : []
-        };
-      }
-      if (_runControl.parseNdjsonStream) {
-        return await _runControl.parseNdjsonStream(res, {
-          onLog: (line) => log(line),
-          onEvent: (evt) => handleRunEventMessage(evt),
-        });
-      }
-      throw new Error("运行模块未加载");
     }
 
     async function runWorkflow() {
@@ -1619,34 +1665,56 @@ const graph = new LGraph();
     }
 
     async function runScheduleWorkflowStream(scheduleId) {
-      const res = await fetch("/api/schedules/run-now-stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: scheduleId })
-      });
-
-      if (!res.ok) {
+      const controller = new AbortController();
+      scheduleRunStreamAbortController = controller;
+      try {
+        let res;
         try {
-          const data = await res.json();
-          const msg = data && data.error ? String(data.error) : "";
-          if (msg) throw new Error(msg);
+          res = await fetch("/api/schedules/run-now-stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: scheduleId }),
+            signal: controller.signal,
+          });
         } catch (err) {
-          if (err && err.message) throw err;
-          throw new Error(`执行失败（HTTP ${res.status}）`);
+          if (err && err.name === "AbortError") throw new Error("执行已取消");
+          throw err;
+        }
+
+        if (!res.ok) {
+          try {
+            const data = await res.json();
+            const msg = data && data.error ? String(data.error) : "";
+            if (msg) throw new Error(msg);
+          } catch (err) {
+            if (err && err.message) throw err;
+            throw new Error(`执行失败（HTTP ${res.status}）`);
+          }
+        }
+
+        if (!res.body || typeof res.body.getReader !== "function") {
+          throw new Error("浏览器不支持流式执行");
+        }
+
+        if (_runControl.parseNdjsonStream) {
+          try {
+            return await _runControl.parseNdjsonStream(res, {
+              onLog: (line) => log(line),
+              onEvent: (evt) => handleRunEventMessage(evt),
+            });
+          } catch (err) {
+            if (controller.signal.aborted || (err && err.name === "AbortError")) {
+              throw new Error("执行已取消");
+            }
+            throw err;
+          }
+        }
+        throw new Error("运行模块未加载");
+      } finally {
+        if (scheduleRunStreamAbortController === controller) {
+          scheduleRunStreamAbortController = null;
         }
       }
-
-      if (!res.body || typeof res.body.getReader !== "function") {
-        throw new Error("浏览器不支持流式执行");
-      }
-
-      if (_runControl.parseNdjsonStream) {
-        return await _runControl.parseNdjsonStream(res, {
-          onLog: (line) => log(line),
-          onEvent: (evt) => handleRunEventMessage(evt),
-        });
-      }
-      throw new Error("运行模块未加载");
     }
 
     async function deleteScheduleItem(scheduleId) {
@@ -2913,8 +2981,12 @@ const graph = new LGraph();
       tapPicker.node.properties.x = Math.round(tapPicker.selectedX);
       tapPicker.node.properties.y = Math.round(tapPicker.selectedY);
       const widgets = tapPicker.node.widgets || [];
-      if (widgets[0]) widgets[0].value = tapPicker.node.properties.x;
-      if (widgets[1]) widgets[1].value = tapPicker.node.properties.y;
+      const wx = widgets.find((w) => String(w && w.name || "") === "横坐标");
+      const wy = widgets.find((w) => String(w && w.name || "") === "纵坐标");
+      if (wx) wx.value = tapPicker.node.properties.x;
+      else if (widgets[0]) widgets[0].value = tapPicker.node.properties.x;
+      if (wy) wy.value = tapPicker.node.properties.y;
+      else if (widgets[1]) widgets[1].value = tapPicker.node.properties.y;
       markCanvasDirty();
       setStatus(`已写入点击坐标 (${tapPicker.node.properties.x}, ${tapPicker.node.properties.y})`);
       closeTapPicker();
@@ -3205,10 +3277,16 @@ const graph = new LGraph();
       swipePicker.node.properties.distance_px = distancePx;
       swipePicker.node.properties.x = swipePicker.startX;
       swipePicker.node.properties.y = swipePicker.startY;
-      if (widgets[0]) widgets[0].value = directionValueToLabel(direction);
-      if (widgets[2]) widgets[2].value = distancePx;
-      if (widgets[3]) widgets[3].value = String(swipePicker.startX);
-      if (widgets[4]) widgets[4].value = String(swipePicker.startY);
+      const wDirection = widgets.find((w) => String(w && w.name || "") === "滑动方向");
+      const wDistance = widgets.find((w) => String(w && w.name || "") === "滑动像素");
+      const wX = widgets.find((w) => String(w && w.name || "") === "起点X(可选)");
+      const wY = widgets.find((w) => String(w && w.name || "") === "起点Y(可选)");
+      if (wDirection) wDirection.value = directionValueToLabel(direction);
+      else if (widgets[0]) widgets[0].value = directionValueToLabel(direction);
+      if (wDistance) wDistance.value = distancePx;
+      else if (widgets[2]) widgets[2].value = distancePx;
+      if (wX) wX.value = String(swipePicker.startX);
+      if (wY) wY.value = String(swipePicker.startY);
       markCanvasDirty();
       setStatus(`已写入滑动配置：方向=${directionValueToLabel(direction)}，像素=${distancePx}`);
       closeSwipePicker();

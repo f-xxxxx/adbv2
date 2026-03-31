@@ -148,7 +148,10 @@ class TapNode(BaseNode):
         device_id = self._device_id(payload)
         x = self._as_int(inputs.get("x"), 540)
         y = self._as_int(inputs.get("y"), 960)
+        post_wait_sec = max(0.0, self._as_float(inputs.get("post_wait_sec"), 0.0))
         ctx.adb.tap(device_id, x, y)
+        if post_wait_sec > 0:
+            self._sleep_with_cancel(ctx, post_wait_sec)
         ctx.log(f"[点击节点] 设备={device_id}，坐标=({x},{y})")
         return {**payload, "last_action": "tap", "tap": {"x": x, "y": y}}
 
@@ -163,6 +166,7 @@ class SwipeNode(BaseNode):
         direction = _normalize_swipe_direction(inputs.get("direction"), default="up")
         duration_ms = self._as_int(inputs.get("duration_ms"), 350)
         distance_px = max(1, self._as_int(inputs.get("distance_px"), 420))
+        post_wait_sec = max(0.0, self._as_float(inputs.get("post_wait_sec"), 0.0))
 
         x1 = inputs.get("x1")
         y1 = inputs.get("y1")
@@ -184,6 +188,8 @@ class SwipeNode(BaseNode):
 
         direction_label = "下滑" if direction == "down" else "上滑"
         ctx.adb.swipe(device_id, sx1, sy1, sx2, sy2, duration_ms=duration_ms)
+        if post_wait_sec > 0:
+            self._sleep_with_cancel(ctx, post_wait_sec)
         ctx.log(
             f"[滑动节点] 设备={device_id}，方向={direction_label}，({sx1},{sy1})->({sx2},{sy2})，"
             f"时长={duration_ms}ms，{mode_text}"
@@ -275,8 +281,9 @@ class ScreenshotNode(BaseNode):
         prefix = str(inputs.get("prefix", "shot")).strip()
         if not prefix:
             prefix = "shot"
+        post_wait_sec = max(0.0, self._as_float(inputs.get("post_wait_sec"), 0.0))
         loop_iteration = _payload_loop_iteration(payload)
-        ctx.adb.mkdir(device_id, remote_dir)
+        ctx.adb.ensure_remote_dir(device_id, remote_dir)
 
         remote_paths: list[str] = list(payload.get("remote_paths") or [])
         ctx.ensure_not_cancelled()
@@ -285,6 +292,8 @@ class ScreenshotNode(BaseNode):
         name = f"{prefix}_{ts_ms}_{rand_suffix}_r{loop_iteration}_s1.png"
         remote_path = f"{remote_dir.rstrip('/')}/{name}"
         ctx.adb.screenshot_to_remote(device_id, remote_path)
+        if post_wait_sec > 0:
+            self._sleep_with_cancel(ctx, post_wait_sec)
         remote_paths.append(remote_path)
 
         ctx.log(

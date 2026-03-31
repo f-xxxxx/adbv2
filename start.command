@@ -13,6 +13,11 @@ fi
 # 激活虚拟环境
 source .venv/bin/activate
 
+# 提升文件句柄上限（macOS 长循环更稳定）
+if command -v ulimit >/dev/null 2>&1; then
+  ulimit -n 8192 || true
+fi
+
 # 安装依赖（若已安装会很快跳过）
 pip3 install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 

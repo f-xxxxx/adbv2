@@ -70,12 +70,13 @@
 
     function TapNode() {
       this.title = "点击节点";
-      this.properties = { x: 540, y: 1600 };
+      this.properties = { x: 540, y: 1600, post_wait_sec: 0 };
       makeIO(this, true);
       this.addWidget("number", "横坐标", this.properties.x, (v) => (this.properties.x = Number(v)));
       this.addWidget("number", "纵坐标", this.properties.y, (v) => (this.properties.y = Number(v)));
+      this.addWidget("number", "动作后等待(秒)", this.properties.post_wait_sec, (v) => (this.properties.post_wait_sec = Number(v)));
       this.addWidget("button", "图片取点", "", () => openTapPicker(this));
-      this.size = [240, 130];
+      this.size = [260, 160];
     }
 
     function InputNode() {
@@ -98,7 +99,7 @@
 
     function SwipeNode() {
       this.title = "滑动节点";
-      this.properties = { direction: "up", duration_ms: 350, distance_px: 420, x: null, y: null };
+      this.properties = { direction: "up", duration_ms: 350, distance_px: 420, x: null, y: null, post_wait_sec: 0 };
       makeIO(this, true);
       this.addWidget(
         "combo",
@@ -109,6 +110,7 @@
       );
       this.addWidget("number", "滑动时长(毫秒)", this.properties.duration_ms, (v) => (this.properties.duration_ms = Number(v)));
       this.addWidget("number", "滑动像素", this.properties.distance_px, (v) => (this.properties.distance_px = Number(v)));
+      this.addWidget("number", "动作后等待(秒)", this.properties.post_wait_sec, (v) => (this.properties.post_wait_sec = Number(v)));
       this.addWidget("text", "起点X(可选)", this.properties.x == null ? "" : String(this.properties.x), (v) => {
         const txt = String(v || "").trim();
         this.properties.x = txt === "" ? null : Number(txt);
@@ -118,7 +120,7 @@
         this.properties.y = txt === "" ? null : Number(txt);
       });
       this.addWidget("button", "图片取点(起止)", "", () => openSwipePicker(this));
-      this.size = [280, 200];
+      this.size = [300, 230];
     }
 
     function WaitNode() {
@@ -134,11 +136,13 @@
       this.properties = {
         remote_dir: "/sdcard/adbflow",
         prefix: "capture",
+        post_wait_sec: 0,
       };
       makeIO(this, true);
       this.addWidget("text", "手机目录", this.properties.remote_dir, (v) => (this.properties.remote_dir = v));
       this.addWidget("text", "文件名前缀", this.properties.prefix, (v) => (this.properties.prefix = v));
-      this.size = [300, 110];
+      this.addWidget("number", "动作后等待(秒)", this.properties.post_wait_sec, (v) => (this.properties.post_wait_sec = Number(v)));
+      this.size = [300, 140];
     }
 
     function LoopStartNode() {
