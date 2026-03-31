@@ -165,6 +165,23 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="invalid-data-key-modal">
+    <div class="modal-panel" style="width:min(560px,92vw)">
+      <div class="modal-head">选择无效数据主键（单选）</div>
+      <div class="modal-body">
+        <div id="invalid-data-key-list" class="dedup-keys-list"></div>
+      </div>
+      <div class="modal-foot">
+        <span>候选项来源：导出节点上游 OCR 节点的识别区域 name</span>
+        <div class="modal-actions">
+          <button onclick="clearInvalidDataKeySelection()">清空</button>
+          <button onclick="closeInvalidDataKeyEditor()">取消</button>
+          <button class="primary" onclick="saveInvalidDataKeyEditor()">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="workflow-picker-modal">
     <div class="modal-panel" style="width:min(760px,94vw)">
       <div class="modal-head">加载工作流（workflows 文件夹）</div>

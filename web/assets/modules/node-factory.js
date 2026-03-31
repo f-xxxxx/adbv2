@@ -44,8 +44,11 @@
       buildRegionsPreview,
       openDedupKeysEditor,
       buildDedupKeysPreview,
+      openInvalidDataKeyEditor,
+      buildInvalidDataKeyPreview,
       openExcelOutputLocation,
       syncImageLightboxFromNode,
+      openImageLightbox,
     } = deps;
 
     function StartNode() {
@@ -212,14 +215,22 @@
         output_path: "outputs/docs/ocr_result.xlsx",
         append_mode: false,
         dedup_keys: ["图片"],
+        invalid_data_key: "",
       };
       makeIO(this, true);
       this.addWidget("text", "导出文件路径", this.properties.output_path, (v) => (this.properties.output_path = v));
       this.addWidget("toggle", "增量导出", this.properties.append_mode, (v) => (this.properties.append_mode = !!v));
       this.addWidget("button", "选择去重键", "", () => openDedupKeysEditor(this));
       this.__dedupPreviewWidget = this.addWidget("text", "去重键摘要", buildDedupKeysPreview(this.properties.dedup_keys), () => {});
+      this.addWidget("button", "选择无效数据主键", "", () => openInvalidDataKeyEditor(this));
+      this.__invalidDataKeyPreviewWidget = this.addWidget(
+        "text",
+        "无效数据主键",
+        buildInvalidDataKeyPreview(this.properties.invalid_data_key),
+        () => {}
+      );
       this.addWidget("button", "打开文件所在位置", "", () => openExcelOutputLocation(this));
-      this.size = [360, 170];
+      this.size = [360, 220];
     }
 
     function PreviewNode() {
@@ -243,9 +254,36 @@
       this._previewPanelRect = { x: 8, y: 108, w: 1, h: 1 };
       this._previewMessage = "执行后在节点内显示图片";
       makeIO(this, true);
-      this.addWidget("text", "图片文件夹", this.properties.folder_dir, (v) => (this.properties.folder_dir = v));
+      this._folderDirWidget = this.addWidget("text", "图片文件夹", this.properties.folder_dir, (v) => {
+        if (this._isFolderDirReadonly()) {
+          if (this._folderDirWidget) {
+            this._folderDirWidget.value = this.properties.folder_dir || "";
+          }
+          return;
+        }
+        this.properties.folder_dir = v;
+      });
       this.addWidget("number", "展示张数", this.properties.max_images, (v) => (this.properties.max_images = Number(v)));
       this.size = [320, 280];
+
+      this._isFolderDirReadonly = () => !!(this.inputs && this.inputs[0] && this.inputs[0].link != null);
+      this.syncFolderDirReadonly = () => {
+        const readonly = this._isFolderDirReadonly();
+        if (!this._folderDirWidget) return;
+        this._folderDirWidget.disabled = readonly;
+        this._folderDirWidget.readonly = readonly;
+        this._folderDirWidget.name = readonly ? "图片文件夹(上游只读)" : "图片文件夹";
+        if (this.graph && this.graph.setDirtyCanvas) this.graph.setDirtyCanvas(true, true);
+      };
+      this.onConnectionsChange = () => {
+        this.syncFolderDirReadonly();
+      };
+      this.onAdded = () => {
+        this.syncFolderDirReadonly();
+      };
+      this.onConfigure = () => {
+        this.syncFolderDirReadonly();
+      };
 
       this.clearPreview = () => {
         this._previewImages = [];
@@ -378,6 +416,20 @@
         }
         ctx.restore();
       };
+
+      this.onDblClick = (_event, pos) => {
+        if (!this._previewImages || !this._previewImages.length || this._previewIndex < 0) return false;
+        const p = this._previewPanelRect || { x: 8, y: 108, w: 1, h: 1 };
+        const x = Array.isArray(pos) ? Number(pos[0]) : Number((pos && pos.x) || 0);
+        const y = Array.isArray(pos) ? Number(pos[1]) : Number((pos && pos.y) || 0);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+        const inside = x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h;
+        if (!inside) return false;
+        if (typeof openImageLightbox === "function") openImageLightbox(this);
+        return true;
+      };
+
+      this.syncFolderDirReadonly();
     }
 
     LiteGraph.registerNodeType("节点/开始", StartNode);

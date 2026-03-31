@@ -174,8 +174,11 @@ const graph = new LGraph();
       buildRegionsPreview,
       openDedupKeysEditor,
       buildDedupKeysPreview,
+      openInvalidDataKeyEditor,
+      buildInvalidDataKeyPreview,
       openExcelOutputLocation,
       syncImageLightboxFromNode,
+      openImageLightbox,
     });
 
     function addNodeByType(type, pos = null) {
@@ -582,11 +585,15 @@ const graph = new LGraph();
         if (widgets[0]) widgets[0].value = node.properties.output_path || "outputs/docs/ocr_result.xlsx";
         if (widgets[1]) widgets[1].value = !!node.properties.append_mode;
         syncExportDedupPreview(node);
+        syncExportInvalidDataKeyPreview(node);
       } else if (ct === "PreviewExcel") {
         if (widgets[0]) widgets[0].value = Number(node.properties.max_rows ?? 10);
       } else if (ct === "PreviewImages") {
         if (widgets[0]) widgets[0].value = node.properties.folder_dir || "";
         if (widgets[1]) widgets[1].value = Number(node.properties.max_images ?? 12);
+        if (typeof node.syncFolderDirReadonly === "function") {
+          node.syncFolderDirReadonly();
+        }
       }
     }
 
@@ -965,7 +972,8 @@ const graph = new LGraph();
       }
       log("开始执行工作流...");
       setStatus("工作流执行中...");
-      allowAutoLoadScheduleOutcome = true;
+      // 手动执行时禁用调度结果自动覆盖，避免节点预览被历史调度报告串改。
+      allowAutoLoadScheduleOutcome = false;
       cancelRequestedByUser = false;
       workflowRunning = true;
       updateRunButtonState();
@@ -1007,11 +1015,13 @@ const graph = new LGraph();
           setStatus("执行失败");
         }
         currentRunId = "";
-        currentReportPath = "outputs/reports/manual_latest.json";
-        await openReportInBottomTab(currentReportPath, "手动执行报告");
+        currentReportPath = "";
+        clearReportPanel("执行报告：执行失败（未加载历史报告）");
+        clearTimelinePanel("运行回放：执行失败（未加载历史回放）");
       } finally {
         cancelRequestedByUser = false;
         workflowRunning = false;
+        allowAutoLoadScheduleOutcome = false;
         stopExecutionProgress();
         resetNodeProgressHighlight();
         await refreshRuntimeStatus(true);
@@ -1845,6 +1855,23 @@ const graph = new LGraph();
       return text.slice(0, 30) + "...";
     }
 
+    function normalizeInvalidDataKeyValue(value) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.normalizeInvalidDataKeyValue) {
+        return _dedupKeysEditorController.normalizeInvalidDataKeyValue(value);
+      }
+      return String(value || "").trim();
+    }
+
+    function buildInvalidDataKeyPreview(value) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.buildInvalidDataKeyPreview) {
+        return _dedupKeysEditorController.buildInvalidDataKeyPreview(value);
+      }
+      const key = normalizeInvalidDataKeyValue(value);
+      return key || "未设置";
+    }
+
     function syncExportDedupPreview(node) {
       ensureNodeEditorControllers();
       if (_dedupKeysEditorController && _dedupKeysEditorController.syncExportDedupPreview) {
@@ -1855,6 +1882,19 @@ const graph = new LGraph();
       node.properties.dedup_keys = normalizeDedupKeysValue(node.properties.dedup_keys);
       if (!node.__dedupPreviewWidget) return;
       node.__dedupPreviewWidget.value = buildDedupKeysPreview(node.properties.dedup_keys);
+      markCanvasDirty();
+    }
+
+    function syncExportInvalidDataKeyPreview(node) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.syncExportInvalidDataKeyPreview) {
+        _dedupKeysEditorController.syncExportInvalidDataKeyPreview(node);
+        return;
+      }
+      if (!node) return;
+      node.properties.invalid_data_key = normalizeInvalidDataKeyValue(node.properties.invalid_data_key);
+      if (!node.__invalidDataKeyPreviewWidget) return;
+      node.__invalidDataKeyPreviewWidget.value = buildInvalidDataKeyPreview(node.properties.invalid_data_key);
       markCanvasDirty();
     }
 
@@ -2029,6 +2069,91 @@ const graph = new LGraph();
       syncExportDedupPreview(currentEditingExportNode);
       setStatus(`去重键已更新: ${currentEditingExportNode.properties.dedup_keys.join(", ")}`);
       closeDedupKeysEditor();
+    }
+
+    function openInvalidDataKeyEditor(node) {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.openInvalidDataKeyEditor) {
+        _dedupKeysEditorController.openInvalidDataKeyEditor(node);
+        return;
+      }
+      currentEditingExportNode = node;
+      const modal = document.getElementById("invalid-data-key-modal");
+      const listEl = document.getElementById("invalid-data-key-list");
+      if (!modal || !listEl) return;
+      const ocrNode = findUpstreamOcrNode(node);
+      const candidates = parseRegionNamesFromNode(ocrNode);
+      const selected = normalizeInvalidDataKeyValue(node && node.properties ? node.properties.invalid_data_key : "");
+      listEl.innerHTML = "";
+      if (!candidates.length) {
+        listEl.innerHTML = '<div class="workflow-empty">未找到可选 OCR 区域名，请先连接并配置文字识别节点区域。</div>';
+      } else {
+        for (const key of candidates) {
+          const row = document.createElement("label");
+          row.className = "dedup-key-row";
+          const rb = document.createElement("input");
+          rb.type = "radio";
+          rb.name = "invalid-data-key-radio";
+          rb.value = key;
+          rb.checked = selected === key;
+          const span = document.createElement("span");
+          span.textContent = key;
+          row.appendChild(rb);
+          row.appendChild(span);
+          listEl.appendChild(row);
+        }
+      }
+      modal.classList.remove("hidden");
+    }
+
+    function closeInvalidDataKeyEditor() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.closeInvalidDataKeyEditor) {
+        _dedupKeysEditorController.closeInvalidDataKeyEditor();
+        return;
+      }
+      currentEditingExportNode = null;
+      const modal = document.getElementById("invalid-data-key-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    function clearInvalidDataKeySelection() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.clearInvalidDataKeySelection) {
+        _dedupKeysEditorController.clearInvalidDataKeySelection();
+        return;
+      }
+      const listEl = document.getElementById("invalid-data-key-list");
+      if (!listEl) return;
+      listEl.querySelectorAll("input[type=radio]").forEach((el) => {
+        el.checked = false;
+      });
+    }
+
+    function saveInvalidDataKeyEditor() {
+      ensureNodeEditorControllers();
+      if (_dedupKeysEditorController && _dedupKeysEditorController.saveInvalidDataKeyEditor) {
+        _dedupKeysEditorController.saveInvalidDataKeyEditor();
+        return;
+      }
+      if (!currentEditingExportNode) {
+        closeInvalidDataKeyEditor();
+        return;
+      }
+      const listEl = document.getElementById("invalid-data-key-list");
+      if (!listEl) {
+        closeInvalidDataKeyEditor();
+        return;
+      }
+      const selected = listEl.querySelector("input[type=radio]:checked");
+      currentEditingExportNode.properties.invalid_data_key = selected ? String(selected.value || "").trim() : "";
+      syncExportInvalidDataKeyPreview(currentEditingExportNode);
+      setStatus(
+        currentEditingExportNode.properties.invalid_data_key
+          ? `无效数据主键已设置: ${currentEditingExportNode.properties.invalid_data_key}`
+          : "无效数据主键已清空"
+      );
+      closeInvalidDataKeyEditor();
     }
 
     function openRegionsEditor(node) {
@@ -3091,8 +3216,16 @@ const graph = new LGraph();
       const nodes = graph._nodes || [];
       for (const node of nodes) {
         if (!node || CLASS_MAP[node.type] !== "PreviewImages") continue;
+        const inputLinked = !!(node.inputs && node.inputs[0] && node.inputs[0].link != null);
+        if (inputLinked) {
+          node.properties = node.properties || {};
+          node.properties.folder_dir = "";
+          const widgets = node.widgets || [];
+          if (widgets[0]) widgets[0].value = "";
+        }
         if (typeof node.clearPreview === "function") node.clearPreview();
       }
+      markCanvasDirty();
     }
 
     function applyPreviewImagesToNodes(outputs) {
@@ -3102,10 +3235,18 @@ const graph = new LGraph();
         const node = graph.getNodeById(Number(nodeId));
         if (!node) continue;
         if (CLASS_MAP[node.type] !== "PreviewImages") continue;
+        const previewDir = String(payload.preview_image_dir || "").trim();
+        if (previewDir) {
+          node.properties = node.properties || {};
+          node.properties.folder_dir = previewDir;
+          const widgets = node.widgets || [];
+          if (widgets[0]) widgets[0].value = previewDir;
+        }
         if (typeof node.setPreviewPayload === "function") {
           node.setPreviewPayload(payload);
         }
       }
+      markCanvasDirty();
     }
 
     function clearPreviewTable(metaText = "结果预览：暂无") {
@@ -3636,6 +3777,7 @@ const graph = new LGraph();
           { id: "tap-picker-modal", close: closeTapPicker },
           { id: "swipe-picker-modal", close: closeSwipePicker },
           { id: "dedup-keys-modal", close: closeDedupKeysEditor },
+          { id: "invalid-data-key-modal", close: closeInvalidDataKeyEditor },
           { id: "schedule-modal", close: closeScheduleModal },
           { id: "schedule-list-modal", close: closeScheduleListModal },
           { id: "schedule-report-modal", close: closeScheduleReportModal },

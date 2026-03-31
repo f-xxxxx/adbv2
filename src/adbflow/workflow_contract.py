@@ -109,6 +109,7 @@ NODE_CONTRACTS: dict[str, NodeSpec] = {
             "output_path": FieldSpec("str", "outputs/docs/ocr_result.xlsx"),
             "append_mode": FieldSpec("bool", False),
             "dedup_keys": FieldSpec("str_list", ["图片"]),
+            "invalid_data_key": FieldSpec("str", ""),
         }
     ),
     "PreviewExcel": NodeSpec(

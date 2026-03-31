@@ -363,6 +363,8 @@ class PullToPcNode(BaseNode):
             "local_paths": local_paths,
             "save_dir": str(save_dir),
             "clear_save_dir": clear_save_dir,
+            "_preview_dir_hint": str(save_dir),
+            "_preview_dir_hint_source": "PullToPC",
         }
 
 
@@ -449,6 +451,8 @@ class EasyOCRNode(BaseNode):
             "ocr_region_names": region_names,
             "ocr_image_paths": image_paths,
             "ocr_image_dir": ocr_image_dir,
+            "_preview_dir_hint": ocr_image_dir,
+            "_preview_dir_hint_source": "EasyOCR",
         }
 
 
@@ -464,6 +468,7 @@ class ExportExcelNode(BaseNode):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         append_mode = self._as_bool(inputs.get("append_mode"), False)
         dedup_keys = _parse_dedup_keys(inputs.get("dedup_keys"))
+        invalid_data_key = str(inputs.get("invalid_data_key", "") or "").strip()
 
         if not region_names:
             seen_names: set[str] = set()
@@ -477,6 +482,17 @@ class ExportExcelNode(BaseNode):
                 region_names.append(name)
 
         table_rows = _build_export_rows(rows, region_names)
+        filtered_invalid_count = 0
+        invalid_filter_applied = False
+        invalid_filter_key_exists = invalid_data_key in {"图片", *region_names} if invalid_data_key else False
+        if invalid_data_key and invalid_filter_key_exists:
+            invalid_filter_applied = True
+            kept_rows: list[dict[str, Any]] = []
+            for row in table_rows:
+                if _has_effective_value(row.get(invalid_data_key)):
+                    kept_rows.append(row)
+            filtered_invalid_count = max(0, len(table_rows) - len(kept_rows))
+            table_rows = kept_rows
         columns = ["序号", "图片", *region_names]
         if table_rows:
             df = pd.DataFrame(table_rows)
@@ -513,15 +529,38 @@ class ExportExcelNode(BaseNode):
         if "序号" in df.columns:
             df["序号"] = np.arange(1, len(df) + 1)
 
+        preview_limit = 10
+        preview_df = df.head(preview_limit)
+        preview_columns = [str(c) for c in preview_df.columns.tolist()]
+        preview_rows = [
+            {str(k): _preview_cell_value(v) for k, v in row.items()}
+            for row in preview_df.to_dict(orient="records")
+        ]
+
         df.to_excel(output_path, index=False)
         append_text = "增量" if append_mode else "覆盖"
         dedup_text = ",".join(dedup_keys) if dedup_keys else "整行"
         effective_dedup_text = ",".join(effective_dedup_subset) if effective_dedup_subset else "整行"
+        if not invalid_data_key:
+            invalid_text = "未设置"
+        elif not invalid_filter_key_exists:
+            invalid_text = f"{invalid_data_key}(未命中列)"
+        else:
+            invalid_text = invalid_data_key
         ctx.log(
             f"[导出表格节点] 文件={output_path}，模式={append_text}，去重键={dedup_text}，生效键={effective_dedup_text}，"
+            f"无效主键={invalid_text}，过滤已启用={'是' if invalid_filter_applied else '否'}，过滤空值={filtered_invalid_count}，"
             f"新增={len(table_rows)}，合并前={before_count}，最终={len(df)}"
         )
-        return {**payload, "excel_path": str(output_path), "row_count": len(df)}
+        return {
+            **payload,
+            "excel_path": str(output_path),
+            "row_count": len(df),
+            "preview_columns": preview_columns,
+            "preview_rows": preview_rows,
+            "preview_limit": preview_limit,
+            "preview_total_rows": int(len(df)),
+        }
 
 
 class PreviewExcelNode(BaseNode):
@@ -568,12 +607,22 @@ class PreviewImagesNode(BaseNode):
         max_images = max(1, min(50, self._as_int(inputs.get("max_images"), 12)))
         thumb_max_px = max(80, min(1200, self._as_int(inputs.get("thumb_max_px"), 360)))
 
-        if not folder_dir:
-            folder_dir = _resolve_preview_dir_from_payload(payload)
-        if not folder_dir:
+        upstream_folder = _resolve_preview_dir_from_payload(payload)
+        candidate_folder = upstream_folder or folder_dir
+        if not candidate_folder:
             raise NodeExecutionError("未找到图片文件夹，请设置 folder_dir 或连接回传/识别节点。")
-
-        all_files = _collect_images_from_dir(folder_dir)
+        try:
+            all_files = _collect_images_from_dir(candidate_folder)
+        except NodeExecutionError:
+            fallback_folder = folder_dir if upstream_folder else _resolve_preview_dir_from_payload(payload)
+            if fallback_folder and fallback_folder != candidate_folder:
+                ctx.log(
+                    f"[图片预览节点] 目录不可用，切换到备用目录：{fallback_folder}"
+                )
+                candidate_folder = fallback_folder
+                all_files = _collect_images_from_dir(candidate_folder)
+            else:
+                raise
         selected_files = all_files[:max_images]
 
         preview_images: list[dict[str, Any]] = []
@@ -587,12 +636,12 @@ class PreviewImagesNode(BaseNode):
             )
 
         ctx.log(
-            f"[图片预览节点] 文件夹={folder_dir}，总数={len(all_files)}，展示={len(preview_images)}"
+            f"[图片预览节点] 文件夹={candidate_folder}，总数={len(all_files)}，展示={len(preview_images)}"
         )
         return {
             **payload,
             "preview_images": preview_images,
-            "preview_image_dir": str(Path(folder_dir).resolve()),
+            "preview_image_dir": str(Path(candidate_folder).resolve()),
             "preview_image_total": len(all_files),
             "preview_image_limit": max_images,
         }
@@ -801,20 +850,28 @@ def _extract_region_names(regions: list[dict[str, Any]]) -> list[str]:
 
 
 def _resolve_preview_dir_from_payload(payload: dict[str, Any]) -> str:
-    save_dir = str(payload.get("save_dir", "")).strip()
-    if save_dir:
-        return save_dir
+    hint_dir = str(payload.get("_preview_dir_hint", "")).strip()
+    hint_source = str(payload.get("_preview_dir_hint_source", "")).strip()
+    if hint_dir:
+        if hint_source in {"EasyOCR", "PullToPC"}:
+            return hint_dir
+        # Unknown source: still trust explicit hint.
+        return hint_dir
 
     ocr_dir = str(payload.get("ocr_image_dir", "")).strip()
     if ocr_dir:
         return ocr_dir
 
-    for key in ("local_paths", "ocr_image_paths"):
+    for key in ("ocr_image_paths", "local_paths"):
         paths = payload.get(key) or []
         if isinstance(paths, list) and paths:
             first_path = str(paths[0]).strip()
             if first_path:
                 return str(Path(first_path).parent)
+
+    save_dir = str(payload.get("save_dir", "")).strip()
+    if save_dir:
+        return save_dir
     return ""
 
 
@@ -924,6 +981,19 @@ def _preview_cell_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _has_effective_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _parse_dedup_keys(value: Any) -> list[str]:

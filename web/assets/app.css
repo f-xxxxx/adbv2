@@ -987,8 +987,9 @@
   line-height: 1.6;
 }
     .image-lightbox-panel {
-      width: min(94vw, 1400px);
+      width: min(64vw, 1400px);
       max-height: 94vh;
+      min-height: 80vh;
       display: grid;
       grid-template-rows: auto 1fr;
       background: rgba(18, 20, 24, 0.96);
@@ -1023,6 +1024,8 @@
       border: 1px solid #3d4350;
       border-radius: 4px;
       background: #0f131b;
+      width: 100%;
+      height: 100%;
     }
 
     @media (max-width: 1024px) {

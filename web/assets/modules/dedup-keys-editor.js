@@ -32,11 +32,28 @@
       return text.slice(0, 30) + "...";
     }
 
+    function normalizeInvalidDataKeyValue(value) {
+      return String(value || "").trim();
+    }
+
+    function buildInvalidDataKeyPreview(value) {
+      const key = normalizeInvalidDataKeyValue(value);
+      return key || "未设置";
+    }
+
     function syncExportDedupPreview(node) {
       if (!node) return;
       node.properties.dedup_keys = normalizeDedupKeysValue(node.properties.dedup_keys);
       if (!node.__dedupPreviewWidget) return;
       node.__dedupPreviewWidget.value = buildDedupKeysPreview(node.properties.dedup_keys);
+      if (typeof markCanvasDirty === "function") markCanvasDirty();
+    }
+
+    function syncExportInvalidDataKeyPreview(node) {
+      if (!node) return;
+      node.properties.invalid_data_key = normalizeInvalidDataKeyValue(node.properties.invalid_data_key);
+      if (!node.__invalidDataKeyPreviewWidget) return;
+      node.__invalidDataKeyPreviewWidget.value = buildInvalidDataKeyPreview(node.properties.invalid_data_key);
       if (typeof markCanvasDirty === "function") markCanvasDirty();
     }
 
@@ -94,6 +111,24 @@
       return result;
     }
 
+    function collectInvalidDataCandidateKeys(exportNode) {
+      const ocrNode = findUpstreamOcrNode(exportNode);
+      const regionNames = typeof parseRegionNamesFromRaw === "function"
+        ? parseRegionNamesFromRaw(ocrNode && ocrNode.properties ? ocrNode.properties.regions : "")
+        : [];
+      const current = normalizeInvalidDataKeyValue(exportNode && exportNode.properties ? exportNode.properties.invalid_data_key : "");
+      const all = [...regionNames, current];
+      const used = new Set();
+      const result = [];
+      for (const item of all) {
+        const key = String(item || "").trim();
+        if (!key || used.has(key)) continue;
+        used.add(key);
+        result.push(key);
+      }
+      return result;
+    }
+
     function openEditor(node) {
       if (typeof setCurrentNode === "function") setCurrentNode(node);
       const listEl = document.getElementById("dedup-keys-list");
@@ -128,6 +163,82 @@
         const modal = document.getElementById("dedup-keys-modal");
         if (modal) modal.classList.add("hidden");
       }
+    }
+
+    function openInvalidDataKeyEditor(node) {
+      if (typeof setCurrentNode === "function") setCurrentNode(node);
+      const listEl = document.getElementById("invalid-data-key-list");
+      if (!listEl) return;
+      const candidates = collectInvalidDataCandidateKeys(node);
+      const selected = normalizeInvalidDataKeyValue(node && node.properties ? node.properties.invalid_data_key : "");
+      listEl.innerHTML = "";
+      if (!candidates.length) {
+        const empty = document.createElement("div");
+        empty.className = "workflow-empty";
+        empty.textContent = "未找到可选 OCR 区域名，请先连接并配置文字识别节点区域。";
+        listEl.appendChild(empty);
+      } else {
+        for (const key of candidates) {
+          const row = document.createElement("label");
+          row.className = "dedup-key-row";
+          const rb = document.createElement("input");
+          rb.type = "radio";
+          rb.name = "invalid-data-key-radio";
+          rb.value = key;
+          rb.checked = selected === key;
+          const span = document.createElement("span");
+          span.textContent = key;
+          row.appendChild(rb);
+          row.appendChild(span);
+          listEl.appendChild(row);
+        }
+      }
+      if (modalController) modalController.open("invalid-data-key-modal");
+      else {
+        const modal = document.getElementById("invalid-data-key-modal");
+        if (modal) modal.classList.remove("hidden");
+      }
+    }
+
+    function closeInvalidDataKeyEditor() {
+      if (typeof setCurrentNode === "function") setCurrentNode(null);
+      if (modalController) modalController.close("invalid-data-key-modal");
+      else {
+        const modal = document.getElementById("invalid-data-key-modal");
+        if (modal) modal.classList.add("hidden");
+      }
+    }
+
+    function clearInvalidDataKeySelection() {
+      const listEl = document.getElementById("invalid-data-key-list");
+      if (!listEl) return;
+      listEl.querySelectorAll("input[type=radio]").forEach((el) => {
+        el.checked = false;
+      });
+    }
+
+    function saveInvalidDataKeyEditor() {
+      const node = typeof getCurrentNode === "function" ? getCurrentNode() : null;
+      if (!node) {
+        closeInvalidDataKeyEditor();
+        return;
+      }
+      const listEl = document.getElementById("invalid-data-key-list");
+      if (!listEl) {
+        closeInvalidDataKeyEditor();
+        return;
+      }
+      const selected = listEl.querySelector("input[type=radio]:checked");
+      node.properties.invalid_data_key = selected ? String(selected.value || "").trim() : "";
+      syncExportInvalidDataKeyPreview(node);
+      if (typeof setStatus === "function") {
+        setStatus(
+          node.properties.invalid_data_key
+            ? `无效数据主键已设置: ${node.properties.invalid_data_key}`
+            : "无效数据主键已清空"
+        );
+      }
+      closeInvalidDataKeyEditor();
     }
 
     function selectAll() {
@@ -173,11 +284,18 @@
       normalizeDedupKeysValue,
       buildDedupKeysPreview,
       syncExportDedupPreview,
+      normalizeInvalidDataKeyValue,
+      buildInvalidDataKeyPreview,
+      syncExportInvalidDataKeyPreview,
       openEditor,
       closeEditor,
       selectAll,
       clearSelection,
       saveEditor,
+      openInvalidDataKeyEditor,
+      closeInvalidDataKeyEditor,
+      clearInvalidDataKeySelection,
+      saveInvalidDataKeyEditor,
     };
   }
 

@@ -149,11 +149,17 @@
   "12": {
     "class_type": "ExportExcel",
     "inputs": {
+      "output_path": "outputs/docs/ocr_loop_result.xlsx",
+      "append_mode": false,
+      "dedup_keys": [
+        "姓名",
+        "手机号"
+      ],
+      "invalid_data_key": "姓名",
       "input": [
         "11",
         0
-      ],
-      "output_path": "outputs/docs/ocr_loop_result.xlsx"
+      ]
     }
   },
   "13": {
