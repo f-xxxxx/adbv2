@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import secrets
 import threading
@@ -29,12 +30,14 @@ from src.adbflow.persistence import (
     health_summary,
     metrics_summary,
 )
+from PIL import Image
 
 utils_bp = Blueprint("utils", __name__)
 _TAP_PICKER_TEMP_LOCK = threading.Lock()
 _TAP_PICKER_TEMP: dict[str, dict[str, str | float]] = {}
 _TAP_PICKER_TMP_DIR = (Path("outputs/tmp/tap_picker")).resolve()
 _TAP_PICKER_TMP_DIR.mkdir(parents=True, exist_ok=True)
+_PROJECT_ROOT = Path.cwd().resolve()
 
 
 @utils_bp.get("/api/devices")
@@ -152,6 +155,57 @@ def read_report():
     except Exception as exc:
         return err(f"读取报告失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
     return jsonify({"ok": True, "path": str(target), "report": payload})
+
+
+@utils_bp.get("/api/image/thumb")
+def image_thumb():
+    raw_path = str(request.args.get("path", "")).strip()
+    if not raw_path:
+        return err("缺少 path 参数", ErrorCode.BAD_REQUEST, 400)
+    try:
+        max_side = int(request.args.get("max_side", 360) or 360)
+    except Exception:
+        return err("max_side 必须是整数", ErrorCode.BAD_REQUEST, 400)
+    max_side = max(80, min(1200, max_side))
+
+    target = Path(raw_path).expanduser()
+    if not target.is_absolute():
+        target = (_PROJECT_ROOT / target).resolve()
+    else:
+        target = target.resolve()
+
+    try:
+        if not target.is_relative_to(_PROJECT_ROOT):
+            return err("仅支持读取项目目录下图片", ErrorCode.BAD_REQUEST, 400)
+    except Exception:
+        return err("图片路径不合法", ErrorCode.BAD_REQUEST, 400)
+
+    if not target.exists() or not target.is_file():
+        return err(f"图片不存在：{target}", ErrorCode.NOT_FOUND, 404)
+
+    ext = target.suffix.lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}:
+        return err("不支持的图片格式", ErrorCode.BAD_REQUEST, 400)
+
+    try:
+        with Image.open(target) as raw_img:
+            img = raw_img.convert("RGB")
+        w, h = img.size
+        scale = min(max_side / max(1, w), max_side / max(1, h), 1.0)
+        if scale < 1.0:
+            nw = max(1, int(w * scale))
+            nh = max(1, int(h * scale))
+            resized = img.resize((nw, nh), Image.Resampling.LANCZOS)
+            img.close()
+            img = resized
+        buff = io.BytesIO()
+        img.save(buff, format="JPEG", quality=88, optimize=True)
+        img.close()
+        b64 = base64.b64encode(buff.getvalue()).decode("ascii")
+    except Exception as exc:
+        return err(f"生成缩略图失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
+
+    return jsonify({"ok": True, "path": str(target), "data_url": f"data:image/jpeg;base64,{b64}"})
 
 
 @utils_bp.post("/api/open-location")

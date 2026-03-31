@@ -410,8 +410,11 @@ class EasyOCRNode(BaseNode):
         reader = get_ocr_reader(langs, gpu=gpu)
 
         rows: list[dict[str, Any]] = []
+        region_timing_rows: list[dict[str, Any]] = []
+        image_timing_rows: list[dict[str, Any]] = []
         for image_path in image_paths:
             ctx.ensure_not_cancelled()
+            image_started = time.perf_counter()
             with Image.open(image_path) as raw_img:
                 img = raw_img.convert("RGB")
             try:
@@ -422,16 +425,19 @@ class EasyOCRNode(BaseNode):
                     x, y, w, h = _normalize_region(region, img_w, img_h)
                     crop = img.crop((x, y, x + w, y + h))
                     try:
+                        region_started = time.perf_counter()
                         result = reader.readtext(np.array(crop), detail=1, paragraph=True)
+                        region_elapsed_ms = max(0.0, (time.perf_counter() - region_started) * 1000.0)
                     finally:
                         crop.close()
                     texts, confidences = _extract_easyocr_entries(result)
                     text = "\n".join(texts).strip()
                     confidence = round(float(np.mean(confidences)) if confidences else 0.0, 4)
+                    region_name = str(region.get("name", "region") or "region")
                     rows.append(
                         {
                             "image_path": image_path,
-                            "region_name": region.get("name", "region"),
+                            "region_name": region_name,
                             "x": x,
                             "y": y,
                             "w": w,
@@ -440,10 +446,35 @@ class EasyOCRNode(BaseNode):
                             "confidence": confidence,
                         }
                     )
+                    region_timing_rows.append(
+                        {
+                            "image": Path(image_path).name,
+                            "region": region_name,
+                            "elapsed_ms": round(region_elapsed_ms, 2),
+                            "chars": len(text),
+                        }
+                    )
             finally:
                 img.close()
+            image_elapsed_ms = max(0.0, (time.perf_counter() - image_started) * 1000.0)
+            image_timing_rows.append(
+                {
+                    "image": Path(image_path).name,
+                    "elapsed_ms": round(image_elapsed_ms, 2),
+                }
+            )
 
         ctx.log(f"[文字识别节点] 图片数={len(image_paths)}，每图区域数={len(regions) if regions else 1}")
+        if image_timing_rows:
+            top_image_rows = sorted(image_timing_rows, key=lambda x: float(x.get("elapsed_ms", 0.0)), reverse=True)[:5]
+            top_image_text = ", ".join(f"{x['image']}={x['elapsed_ms']}ms" for x in top_image_rows)
+            ctx.log(f"[文字识别节点] 图片耗时Top5: {top_image_text}")
+        if region_timing_rows:
+            top_region_rows = sorted(region_timing_rows, key=lambda x: float(x.get("elapsed_ms", 0.0)), reverse=True)[:8]
+            top_region_text = ", ".join(
+                f"{x['image']}#{x['region']}={x['elapsed_ms']}ms(chars={x['chars']})" for x in top_region_rows
+            )
+            ctx.log(f"[文字识别节点] 区域耗时Top8: {top_region_text}")
         ocr_image_dir = str(Path(image_paths[0]).parent) if image_paths else ""
         return {
             **payload,
@@ -453,6 +484,8 @@ class EasyOCRNode(BaseNode):
             "ocr_image_dir": ocr_image_dir,
             "_preview_dir_hint": ocr_image_dir,
             "_preview_dir_hint_source": "EasyOCR",
+            "ocr_image_timings": image_timing_rows,
+            "ocr_region_timings": region_timing_rows,
         }
 
 

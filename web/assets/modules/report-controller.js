@@ -29,9 +29,23 @@
     return data;
   }
 
+  const _thumbCache = new Map();
+  async function readImageThumb(path, maxSide = 360) {
+    const key = `${String(path || "").trim()}|${Number(maxSide)}`;
+    if (_thumbCache.has(key)) return _thumbCache.get(key);
+    const query = `path=${encodeURIComponent(String(path || ""))}&max_side=${encodeURIComponent(String(maxSide))}`;
+    const res = await fetch(`/api/image/thumb?${query}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "读取缩略图失败");
+    const value = String(data.data_url || "");
+    _thumbCache.set(key, value);
+    return value;
+  }
+
   root.reportController = {
     escapeHtml,
     readReport,
     readTimeline,
+    readImageThumb,
   };
 })();

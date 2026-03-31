@@ -116,6 +116,8 @@ const graph = new LGraph();
     const _reportReplay = _modules.reportReplay || {};
     const _reportRuntime = _modules.reportRuntime || {};
     const _reportController = _modules.reportController || {};
+    const _runResultHandlerModule = _modules.runResultHandler || {};
+    const _previewRendererModule = _modules.previewRenderer || {};
     const _workflowService = _modules.workflowService || {};
     const _workflowSchema = _modules.workflowSchema || {};
     const _reportView = _modules.reportView || {};
@@ -125,7 +127,52 @@ const graph = new LGraph();
     let _ocrRegionEditorController = null;
     let _dedupKeysEditorController = null;
     let _pickerEditorController = null;
+    let _runResultHandler = null;
+    let _previewRenderer = null;
     let workflowSchemaMap = {};
+
+    function ensureRunResultHandler() {
+      if (_runResultHandler || !_runResultHandlerModule.createRunResultHandler) return;
+      _runResultHandler = _runResultHandlerModule.createRunResultHandler({
+        log,
+        setStatus,
+        clearPreviewTable,
+        clearReportPanel,
+        clearTimelinePanel,
+        applyOutputsToWorkspace,
+        setRunInfo: (runId, reportPath) => {
+          currentRunId = String(runId || "");
+          currentReportPath = String(reportPath || "");
+        },
+        getRunInfo: () => ({ runId: currentRunId, reportPath: currentReportPath }),
+        switchBottomTab,
+        reportController: _reportController,
+        reportRuntime: _reportRuntime,
+        reportView: _reportView,
+        reportReplay: _reportReplay,
+        renderReportSummaryCard,
+        renderRunTimeline,
+        setCurrentReportPath: (path) => {
+          currentReportPath = String(path || "");
+        },
+        getCurrentReportPath: () => currentReportPath,
+        formatEpochTime,
+        escapeHtml,
+        clearPreviewImagesOnNodes,
+        resetNodeProgressHighlight,
+        startExecutionProgress,
+        updateRunButtonState,
+      });
+    }
+
+    function ensurePreviewRenderer() {
+      if (_previewRenderer || !_previewRendererModule.createPreviewRenderer) return;
+      _previewRenderer = _previewRendererModule.createPreviewRenderer({
+        clearPreviewTable,
+        getMetaElement: () => document.getElementById("preview-meta-text"),
+        getBodyElement: () => document.getElementById("preview-body"),
+      });
+    }
 
     function makeIO(node, withInput = true) {
       if (withInput) node.addInput("输入", "数据");
@@ -976,48 +1023,62 @@ const graph = new LGraph();
       allowAutoLoadScheduleOutcome = false;
       cancelRequestedByUser = false;
       workflowRunning = true;
-      updateRunButtonState();
-      clearPreviewTable("结果预览：执行中...");
-      clearTimelinePanel("执行回放：执行中...");
-      clearPreviewImagesOnNodes();
-      resetNodeProgressHighlight();
-      startExecutionProgress(workflow);
+      ensureRunResultHandler();
+      if (_runResultHandler && _runResultHandler.handleManualRunStart) {
+        _runResultHandler.handleManualRunStart(workflow);
+      } else {
+        updateRunButtonState();
+        clearPreviewTable("结果预览：执行中...");
+        clearTimelinePanel("执行回放：执行中...");
+        clearPreviewImagesOnNodes();
+        resetNodeProgressHighlight();
+        startExecutionProgress(workflow);
+      }
       try {
         const data = await runWorkflowStream(workflow);
         notifyWorkflowMigrationWarnings(data.migration_warnings, "执行前校验");
         const elapsedSec = ((performance.now() - runStartedAt) / 1000).toFixed(2);
-        log("执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
-        log(`执行耗时: ${elapsedSec} 秒`);
-        if (data.report_path) {
-          log(`执行报告: ${data.report_path}`);
-          currentRunId = String(data.run_id || "");
-          currentReportPath = String(data.report_path || "");
-          await openReportInBottomTab(currentReportPath, "手动执行报告", currentRunId);
-        }
-        applyPreviewImagesToNodes(data.outputs || {});
-        renderPreviewTable(data.outputs || {});
-        setStatus("执行完成");
-      } catch (err) {
-        const msg = err && err.message ? String(err.message) : String(err);
-        if (msg.includes("执行已取消")) {
-          if (cancelRequestedByUser) {
-            log("执行已停止：用户手动停止");
-            clearPreviewTable("结果预览：用户手动停止");
-            setStatus("已手动停止");
-          } else {
-            log("执行已取消");
-            clearPreviewTable("结果预览：执行已取消");
-            setStatus("执行已取消");
-          }
+        ensureRunResultHandler();
+        if (_runResultHandler && _runResultHandler.handleManualRunSuccess) {
+          await _runResultHandler.handleManualRunSuccess(data, elapsedSec);
         } else {
-          log("执行失败: " + msg);
-          clearPreviewTable("结果预览：执行失败");
-          setStatus("执行失败");
+          log("执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
+          log(`执行耗时: ${elapsedSec} 秒`);
+          if (data.report_path) {
+            log(`执行报告: ${data.report_path}`);
+            currentRunId = String(data.run_id || "");
+            currentReportPath = String(data.report_path || "");
+            await openReportInBottomTab(currentReportPath, "手动执行报告", currentRunId);
+          }
+          await applyOutputsToWorkspace(data.outputs || {});
+          setStatus("执行完成");
         }
-        currentRunId = "";
-        currentReportPath = "";
-        clearReportPanel("执行报告：执行失败（未加载历史报告）");
-        clearTimelinePanel("运行回放：执行失败（未加载历史回放）");
+      } catch (err) {
+        ensureRunResultHandler();
+        if (_runResultHandler && _runResultHandler.handleManualRunFailure) {
+          _runResultHandler.handleManualRunFailure(err, cancelRequestedByUser);
+        } else {
+          const msg = err && err.message ? String(err.message) : String(err);
+          if (msg.includes("执行已取消")) {
+            if (cancelRequestedByUser) {
+              log("执行已停止：用户手动停止");
+              clearPreviewTable("结果预览：用户手动停止");
+              setStatus("已手动停止");
+            } else {
+              log("执行已取消");
+              clearPreviewTable("结果预览：执行已取消");
+              setStatus("执行已取消");
+            }
+          } else {
+            log("执行失败: " + msg);
+            clearPreviewTable("结果预览：执行失败");
+            setStatus("执行失败");
+          }
+          currentRunId = "";
+          currentReportPath = "";
+          clearReportPanel("执行报告：执行失败（未加载历史报告）");
+          clearTimelinePanel("运行回放：执行失败（未加载历史回放）");
+        }
       } finally {
         cancelRequestedByUser = false;
         workflowRunning = false;
@@ -1489,9 +1550,6 @@ const graph = new LGraph();
         allowAutoLoadScheduleOutcome = true;
         importWorkflowToCanvas(scheduleWorkflow, false);
         log(`已加载调度工作流到画布: ${String(scheduleId)}`);
-        resetNodeProgressHighlight();
-        clearPreviewImagesOnNodes();
-        startExecutionProgress(scheduleWorkflow);
         activeScheduleRunId = String(scheduleId);
         if (scheduleItem) {
           scheduleItem.run_count = 0;
@@ -1503,35 +1561,52 @@ const graph = new LGraph();
           renderScheduleList();
         }
         schedulerRunning = true;
-        updateRunButtonState();
-        switchBottomTab("report");
-        clearReportPanel("执行报告：调度正在执行...");
-        clearTimelinePanel("运行回放：调度正在执行...");
-        clearPreviewTable("结果预览：调度执行中...");
-        log(`开始执行调度任务: ${String(scheduleId)}`);
-        const data = await runScheduleWorkflowStream(scheduleId);
-        log("调度执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
-        if (data.report_path) {
-          log(`调度执行报告: ${data.report_path}`);
-          currentRunId = String(data.run_id || "");
-          currentReportPath = String(data.report_path || "");
-          await openReportInBottomTab(currentReportPath, "调度执行报告", currentRunId);
+        ensureRunResultHandler();
+        if (_runResultHandler && _runResultHandler.handleScheduleRunStart) {
+          _runResultHandler.handleScheduleRunStart(scheduleId, scheduleWorkflow);
+        } else {
+          updateRunButtonState();
+          switchBottomTab("report");
+          clearReportPanel("执行报告：调度正在执行...");
+          clearTimelinePanel("运行回放：调度正在执行...");
+          clearPreviewTable("结果预览：调度执行中...");
+          log(`开始执行调度任务: ${String(scheduleId)}`);
+          clearPreviewImagesOnNodes();
+          resetNodeProgressHighlight();
+          startExecutionProgress(scheduleWorkflow);
         }
-        applyPreviewImagesToNodes(data.outputs || {});
-        renderPreviewTable(data.outputs || {});
-        setStatus("调度执行完成");
+        const data = await runScheduleWorkflowStream(scheduleId);
+        ensureRunResultHandler();
+        if (_runResultHandler && _runResultHandler.handleScheduleRunSuccess) {
+          await _runResultHandler.handleScheduleRunSuccess(data);
+        } else {
+          log("调度执行完成。输出节点: " + Object.keys(data.outputs || {}).join(", "));
+          if (data.report_path) {
+            log(`调度执行报告: ${data.report_path}`);
+            currentRunId = String(data.run_id || "");
+            currentReportPath = String(data.report_path || "");
+            await openReportInBottomTab(currentReportPath, "调度执行报告", currentRunId);
+          }
+          await applyOutputsToWorkspace(data.outputs || {});
+          setStatus("调度执行完成");
+        }
         await refreshScheduleList(false);
         await refreshRuntimeStatus(true);
       } catch (err) {
-        const msg = err && err.message ? String(err.message) : String(err);
-        if (msg.includes("已取消") || cancelRequestedByUser) {
-          log("调度任务已停止");
-          clearPreviewTable("结果预览：调度已停止");
-          setStatus("调度已停止");
+        ensureRunResultHandler();
+        if (_runResultHandler && _runResultHandler.handleScheduleRunFailure) {
+          _runResultHandler.handleScheduleRunFailure(err, cancelRequestedByUser);
         } else {
-          log("调度执行失败: " + msg);
-          clearPreviewTable("结果预览：调度执行失败");
-          setStatus("调度执行失败");
+          const msg = err && err.message ? String(err.message) : String(err);
+          if (msg.includes("已取消") || cancelRequestedByUser) {
+            log("调度任务已停止");
+            clearPreviewTable("结果预览：调度已停止");
+            setStatus("调度已停止");
+          } else {
+            log("调度执行失败: " + msg);
+            clearPreviewTable("结果预览：调度执行失败");
+            setStatus("调度执行失败");
+          }
         }
         cancelRequestedByUser = false;
         await refreshScheduleList(false);
@@ -3228,13 +3303,28 @@ const graph = new LGraph();
       markCanvasDirty();
     }
 
-    function applyPreviewImagesToNodes(outputs) {
+    async function applyPreviewImagesToNodes(outputs) {
       const entries = Object.entries(outputs || {});
       for (const [nodeId, payload] of entries) {
         if (!payload || typeof payload !== "object" || !Array.isArray(payload.preview_images)) continue;
         const node = graph.getNodeById(Number(nodeId));
         if (!node) continue;
         if (CLASS_MAP[node.type] !== "PreviewImages") continue;
+        const images = Array.isArray(payload.preview_images) ? payload.preview_images : [];
+        const shouldHydrateThumb = images.some((it) => it && typeof it === "object" && !it.data_url && it.path);
+        if (shouldHydrateThumb && _reportController.readImageThumb) {
+          const side = Number(payload.thumb_max_px || (node.properties && node.properties.thumb_max_px) || 360) || 360;
+          await Promise.all(
+            images.map(async (it) => {
+              if (!it || typeof it !== "object" || it.data_url || !it.path) return;
+              try {
+                it.data_url = await _reportController.readImageThumb(String(it.path), side);
+              } catch (_err) {
+                it.data_url = "";
+              }
+            })
+          );
+        }
         const previewDir = String(payload.preview_image_dir || "").trim();
         if (previewDir) {
           node.properties = node.properties || {};
@@ -3247,6 +3337,11 @@ const graph = new LGraph();
         }
       }
       markCanvasDirty();
+    }
+
+    async function applyOutputsToWorkspace(outputs) {
+      await applyPreviewImagesToNodes(outputs);
+      renderPreviewTable(outputs);
     }
 
     function clearPreviewTable(metaText = "结果预览：暂无") {
@@ -3443,53 +3538,10 @@ const graph = new LGraph();
     }
 
     function renderExecutionReport(payload, reportPath = "", sourceText = "执行报告") {
-      const meta = document.getElementById("report-meta-text");
-      const body = document.getElementById("report-body");
-      if (!meta || !body) return;
-
-      if (_reportRuntime.buildReportRenderPayload) {
-        const rendered = _reportRuntime.buildReportRenderPayload(payload, reportPath, sourceText, {
-          escapeHtml,
-          reportView: _reportView,
-        });
-        meta.textContent = String(rendered.metaText || `${sourceText}：-`);
-        body.innerHTML = String(rendered.html || "");
-        currentReportPath = reportPath || "";
-        return;
+      ensureRunResultHandler();
+      if (_runResultHandler && _runResultHandler.renderExecutionReport) {
+        _runResultHandler.renderExecutionReport(payload, reportPath, sourceText);
       }
-
-      const report = payload && typeof payload === "object" ? payload : {};
-      const ok = !!report.ok;
-      const statusText = ok ? "成功" : "失败";
-      const startedAt = String(report.started_at || "-");
-      const endedAt = String(report.ended_at || "-");
-      const elapsed = Number(report.elapsed_sec || 0).toFixed(3) + "s";
-      const nodeCount = Number(report.workflow_node_count || 0);
-      const outputCount = Number(report.output_node_count || 0);
-      const logCount = Number(report.log_count || 0);
-      const errorText = String(report.error || "").trim();
-
-      meta.textContent = `${sourceText}：${statusText} | 开始 ${startedAt} | 结束 ${endedAt}`;
-      const cardsHtml = [
-        renderReportSummaryCard("状态", statusText, ok ? "ok" : "error"),
-        renderReportSummaryCard("耗时", elapsed),
-        renderReportSummaryCard("工作流节点", String(nodeCount)),
-        renderReportSummaryCard("输出节点", String(outputCount)),
-        renderReportSummaryCard("日志条数", String(logCount))
-      ].join("");
-
-      const errorHtml = errorText
-        ? `<div class="report-error-box"><strong>错误信息：</strong><br />${escapeHtml(errorText)}</div>`
-        : "";
-
-      const jsonText = JSON.stringify(report, null, 2);
-      body.innerHTML = `
-        <div class="report-summary-grid">${cardsHtml}</div>
-        ${errorHtml}
-        <div class="report-json-title">报告路径：${reportPath ? escapeHtml(reportPath) : "-"}</div>
-        <pre class="report-json">${escapeHtml(jsonText)}</pre>
-      `;
-      currentReportPath = reportPath || "";
     }
 
     function escapeHtml(text) {
@@ -3504,94 +3556,44 @@ const graph = new LGraph();
     }
 
     async function openReportInBottomTab(path, sourceText = "执行报告", expectedRunId = "") {
-      if (!path) {
-        clearReportPanel("执行报告：暂无");
-        clearTimelinePanel("运行回放：暂无");
-        switchBottomTab("report");
-        return;
-      }
-      try {
-        const data = _reportController.readReport
-          ? await _reportController.readReport(path)
-          : await (async () => {
-              const res = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
-              const d = await res.json();
-              if (!d.ok) throw new Error(d.error || "读取报告失败");
-              return d;
-            })();
-        const report = data.report || {};
-        const reportRunId = String(report.run_id || "");
-        const expect = String(expectedRunId || "").trim();
-        if (expect && reportRunId && expect !== reportRunId) {
-          throw new Error(`报告 run_id 不匹配（期望 ${expect}，实际 ${reportRunId}）`);
-        }
-        currentRunId = reportRunId || expect;
-        renderExecutionReport(report, String(data.path || path), sourceText);
-        await openTimelineByReportPath(String(data.path || path), sourceText, currentRunId);
-        if (report && typeof report === "object" && report.outputs && typeof report.outputs === "object") {
-          applyPreviewImagesToNodes(report.outputs);
-          renderPreviewTable(report.outputs);
-        }
-        switchBottomTab("report");
-      } catch (err) {
-        log("读取执行报告失败: " + err.message);
-        clearReportPanel("执行报告：读取失败");
-        clearTimelinePanel("运行回放：读取失败");
-        switchBottomTab("report");
+      ensureRunResultHandler();
+      if (_runResultHandler && _runResultHandler.openReportInBottomTab) {
+        await _runResultHandler.openReportInBottomTab(path, sourceText, expectedRunId);
       }
     }
 
     async function openTimelineByReportPath(path, sourceText = "执行回放", runId = "") {
-      if (!path) {
-        clearTimelinePanel("执行回放：暂无");
-        return;
-      }
-      try {
-        const data = _reportController.readTimeline
-          ? await _reportController.readTimeline(path, runId)
-          : await (async () => {
-              const rid = String(runId || "").trim();
-              const query = rid
-                ? `run_id=${encodeURIComponent(rid)}`
-                : `report_path=${encodeURIComponent(path)}`;
-              const res = await fetch(`/api/run/timeline?${query}`);
-              const d = await res.json();
-              if (!d.ok) throw new Error(d.error || "读取运行回放失败");
-              return d;
-            })();
-        renderRunTimeline(data.timeline || {}, sourceText);
-      } catch (err) {
-        clearTimelinePanel(`运行回放：${sourceText}读取失败`);
-        log("读取运行回放失败: " + err.message);
+      ensureRunResultHandler();
+      if (_runResultHandler && _runResultHandler.openTimelineByReportPath) {
+        await _runResultHandler.openTimelineByReportPath(path, sourceText, runId);
       }
     }
 
     function renderPreviewTable(outputs) {
-      const preview = pickPreviewOutput(outputs);
-      if (!preview) {
-        if (hasImagePreviewOutput(outputs)) {
-          clearPreviewTable("结果预览：图片已在图片预览节点中显示");
-        } else {
-          clearPreviewTable("结果预览：未检测到展示结果节点输出");
-        }
+      ensurePreviewRenderer();
+      if (_previewRenderer && _previewRenderer.renderPreviewTable) {
+        _previewRenderer.renderPreviewTable(outputs);
         return;
       }
-
+      const preview = pickPreviewOutput(outputs);
+      if (!preview) {
+        if (hasImagePreviewOutput(outputs)) clearPreviewTable("结果预览：图片已在图片预览节点中显示");
+        else clearPreviewTable("结果预览：未检测到展示结果节点输出");
+        return;
+      }
       const columns = Array.isArray(preview.preview_columns) ? preview.preview_columns : [];
       const rows = Array.isArray(preview.preview_rows) ? preview.preview_rows : [];
       const total = Number(preview.preview_total_rows || rows.length || 0);
       const limit = Number(preview.preview_limit || rows.length || 10);
-
       const meta = document.getElementById("preview-meta-text");
       const body = document.getElementById("preview-body");
+      if (!meta || !body) return;
       meta.textContent = `结果预览：展示 ${rows.length} / ${total} 条（上限 ${limit}）`;
       body.innerHTML = "";
-
       if (!columns.length) {
         body.innerHTML = '<div class="preview-empty">Excel 无可展示字段。</div>';
         return;
       }
-
       const table = document.createElement("table");
       table.className = "preview-table";
       const thead = document.createElement("thead");
@@ -3603,7 +3605,6 @@ const graph = new LGraph();
       }
       thead.appendChild(headTr);
       table.appendChild(thead);
-
       const tbody = document.createElement("tbody");
       for (const row of rows) {
         const tr = document.createElement("tr");
@@ -3620,6 +3621,10 @@ const graph = new LGraph();
     }
 
     function pickPreviewOutput(outputs) {
+      ensurePreviewRenderer();
+      if (_previewRenderer && _previewRenderer.pickPreviewOutput) {
+        return _previewRenderer.pickPreviewOutput(outputs);
+      }
       const nodeIds = Object.keys(outputs || {}).sort((a, b) => Number(a) - Number(b));
       let last = null;
       for (const nodeId of nodeIds) {
@@ -3634,6 +3639,10 @@ const graph = new LGraph();
     }
 
     function hasImagePreviewOutput(outputs) {
+      ensurePreviewRenderer();
+      if (_previewRenderer && _previewRenderer.hasImagePreviewOutput) {
+        return _previewRenderer.hasImagePreviewOutput(outputs);
+      }
       const nodeIds = Object.keys(outputs || {});
       for (const nodeId of nodeIds) {
         const payload = outputs[nodeId];

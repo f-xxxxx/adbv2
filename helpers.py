@@ -17,6 +17,35 @@ from src.adbflow.persistence import finalize_run_and_report, upsert_report
 from webapp_state import DOCS_DIR, REPORTS_DIR
 
 
+def _sanitize_outputs_for_report(outputs: object) -> dict[str, object]:
+    """Shrink report payload size while preserving key UI metadata."""
+    if not isinstance(outputs, dict):
+        return {}
+    slim: dict[str, object] = {}
+    for node_id, raw_payload in outputs.items():
+        if not isinstance(raw_payload, dict):
+            slim[str(node_id)] = raw_payload
+            continue
+        payload = dict(raw_payload)
+        preview_images = payload.get("preview_images")
+        if isinstance(preview_images, list):
+            slim_images: list[dict[str, object]] = []
+            for item in preview_images:
+                if not isinstance(item, dict):
+                    continue
+                # Keep only lightweight fields; omit data_url to reduce report size.
+                slim_images.append(
+                    {
+                        "name": str(item.get("name", "") or ""),
+                        "path": str(item.get("path", "") or ""),
+                    }
+                )
+            payload["preview_images"] = slim_images
+            payload["_preview_images_data_url_omitted"] = True
+        slim[str(node_id)] = payload
+    return slim
+
+
 def _write_execution_report(
     workflow: dict[str, object],
     result: ExecutionResult | None,
@@ -44,7 +73,7 @@ def _write_execution_report(
         "error_code": str(error_code or ("" if ok else ErrorCode.RUN_FAILED)),
         "log_count": len(result.logs) if result else 0,
         "output_node_count": len(result.outputs) if result else 0,
-        "outputs": result.outputs if result else {},
+        "outputs": _sanitize_outputs_for_report(result.outputs if result else {}),
         "logs": result.logs if result else [],
         "workflow_node_count": len(workflow or {}),
     }
