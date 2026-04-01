@@ -26,6 +26,7 @@
       <button onclick="showScheduleList()"><span class="btn-icon">&#128196;</span>调度列表</button>
       <button class="warn" onclick="clearGraph()"><span class="btn-icon">&#128465;</span>清空画布</button>
       <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><span class="btn-icon">&#9654;</span>执行工作流</button>
+      <button onclick="openExecutionSettingsModal()"><span class="btn-icon">&#9881;</span>系统设置</button>
     </div>
   </header>
 
@@ -280,6 +281,253 @@
         <div class="modal-actions">
           <button onclick="openCurrentScheduleReportLocation()">打开所在位置</button>
           <button onclick="closeScheduleReportModal()">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="execution-settings-modal">
+    <div class="modal-panel schedule-modal-panel execution-settings-panel" style="width:min(820px,96vw)">
+      <div class="modal-head">系统设置</div>
+      <div class="modal-body">
+        <div class="settings-tabs">
+          <button class="tab-btn active" data-settings-tab="execution" onclick="switchSettingsTab('execution')">
+            <span class="settings-tab-icon">&#9881;</span><span>执行设置</span>
+          </button>
+          <button class="tab-btn" data-settings-tab="scheduler" onclick="switchSettingsTab('scheduler')">
+            <span class="settings-tab-icon">&#128197;</span><span>调度设置</span>
+          </button>
+          <button class="tab-btn" data-settings-tab="cleanup" onclick="switchSettingsTab('cleanup')">
+            <span class="settings-tab-icon">&#128451;</span><span>清理与报告</span>
+          </button>
+          <button class="tab-btn" data-settings-tab="ocradb" onclick="switchSettingsTab('ocradb')">
+            <span class="settings-tab-icon">&#128241;</span><span>OCR 与 ADB</span>
+          </button>
+          <button class="tab-btn" data-settings-tab="frontend" onclick="switchSettingsTab('frontend')">
+            <span class="settings-tab-icon">&#128187;</span><span>前端偏好</span>
+          </button>
+        </div>
+
+        <div id="settings-panel-execution" class="settings-panel">
+          <div class="schedule-form">
+            <div class="settings-group">
+              <div class="settings-group-title">超时与重试</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>EXEC_DEFAULT_TIMEOUT_SEC（单次节点执行默认超时秒数）</span>
+                  <input id="setting-exec-default-timeout-sec" type="number" min="1" step="0.1" />
+                </label>
+                <label class="schedule-field">
+                  <span>EXEC_DEFAULT_MAX_RETRIES（失败后最大重试次数）</span>
+                  <input id="setting-exec-default-max-retries" type="number" min="0" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>EXEC_RETRY_BACKOFF_SEC（重试退避基础秒数）</span>
+                  <input id="setting-exec-retry-backoff-sec" type="number" min="0" step="0.1" />
+                </label>
+                <label class="schedule-field">
+                  <span>MANUAL_RUN_TIMEOUT_SEC（手动执行整体超时秒数）</span>
+                  <input id="setting-manual-run-timeout-sec" type="number" min="1" step="0.1" />
+                </label>
+                <label class="schedule-field">
+                  <span>SCHEDULE_RUN_TIMEOUT_SEC（调度执行整体超时秒数）</span>
+                  <input id="setting-schedule-run-timeout-sec" type="number" min="1" step="0.1" />
+                </label>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">熔断与队列</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>EXEC_CIRCUIT_FAIL_THRESHOLD（熔断触发失败阈值）</span>
+                  <input id="setting-exec-circuit-fail-threshold" type="number" min="1" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>EXEC_CIRCUIT_OPEN_SEC（熔断打开持续秒数）</span>
+                  <input id="setting-exec-circuit-open-sec" type="number" min="1" step="0.1" />
+                </label>
+                <label class="schedule-field">
+                  <span>EXECUTION_QUEUE_MAX_SIZE（执行队列最大长度，0 不限）</span>
+                  <input id="setting-execution-queue-max-size" type="number" min="0" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>STREAM_EVENT_QUEUE_SIZE（流式事件队列长度）</span>
+                  <input id="setting-stream-event-queue-size" type="number" min="1" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>STREAM_DROP_WARN_THRESHOLD（流式丢弃告警阈值）</span>
+                  <input id="setting-stream-drop-warn-threshold" type="number" min="0" step="1" />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-panel-scheduler" class="settings-panel hidden">
+          <div class="schedule-form">
+            <div class="settings-group">
+              <div class="settings-group-title">调度默认值</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>SCHEDULE_DEFAULT_INTERVAL_SEC（创建调度默认间隔秒数）</span>
+                  <input id="setting-schedule-default-interval-sec" type="number" min="10" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>SCHEDULE_DEFAULT_MAX_RUNS（创建调度默认批次）</span>
+                  <input id="setting-schedule-default-max-runs" type="number" min="0" step="1" />
+                </label>
+                <label class="schedule-field schedule-check-field">
+                  <span>SCHEDULE_AUTO_RUN_ON_CREATE（创建后默认立即执行）</span>
+                  <div class="schedule-check-row">
+                    <input id="setting-schedule-auto-run-on-create" type="checkbox" />
+                  </div>
+                </label>
+                <label class="schedule-field">
+                  <span>SCHEDULE_LIST_PAGE_SIZE（调度列表每页条数）</span>
+                  <input id="setting-schedule-list-page-size" type="number" min="1" step="1" />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-panel-cleanup" class="settings-panel hidden">
+          <div class="schedule-form">
+            <div class="settings-group">
+              <div class="settings-group-title">临时文件策略</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>TMP_CLEANUP_INTERVAL_SEC（临时文件清理周期秒数）</span>
+                  <input id="setting-tmp-cleanup-interval-sec" type="number" min="10" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>TMP_CLEANUP_TTL_SEC（临时文件保留秒数）</span>
+                  <input id="setting-tmp-cleanup-ttl-sec" type="number" min="60" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>TAP_PICKER_TMP_TTL_SEC（取点截图保留秒数）</span>
+                  <input id="setting-tap-picker-tmp-ttl-sec" type="number" min="60" step="1" />
+                </label>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">报告保留策略</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>REPORT_KEEP_DAYS（执行报告按天保留）</span>
+                  <input id="setting-report-keep-days" type="number" min="0" step="1" />
+                </label>
+                <label class="schedule-field">
+                  <span>REPORT_MAX_FILES（执行报告最多文件数）</span>
+                  <input id="setting-report-max-files" type="number" min="0" step="1" />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-panel-ocradb" class="settings-panel hidden">
+          <div class="schedule-form">
+            <div class="settings-group">
+              <div class="settings-group-title">OCR 默认参数</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>OCR_LANG_LIST（OCR 默认语言列表，逗号分隔）</span>
+                  <input id="setting-ocr-lang-list" type="text" placeholder="ch_sim,en" />
+                </label>
+                <label class="schedule-field schedule-check-field">
+                  <span>OCR_GPU_ENABLED（OCR 默认启用 GPU）</span>
+                  <div class="schedule-check-row">
+                    <input id="setting-ocr-gpu-enabled" type="checkbox" />
+                  </div>
+                </label>
+                <label class="schedule-field schedule-check-field">
+                  <span>OCR_WARMUP_ON_START（启动时预热 OCR）</span>
+                  <div class="schedule-check-row">
+                    <input id="setting-ocr-warmup-on-start" type="checkbox" />
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">ADB 行为策略</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>ADB_SHELL_TIMEOUT_SEC（ADB shell 超时秒数）</span>
+                  <input id="setting-adb-shell-timeout-sec" type="number" min="1" step="0.1" />
+                </label>
+                <label class="schedule-field">
+                  <span>ADB_PULL_TIMEOUT_SEC（ADB pull/push 超时秒数）</span>
+                  <input id="setting-adb-pull-timeout-sec" type="number" min="1" step="0.1" />
+                </label>
+                <label class="schedule-field">
+                  <span>ADB_DEVICE_SELECT_POLICY（多设备选择策略）</span>
+                  <select id="setting-adb-device-select-policy">
+                    <option value="strict">strict（多设备时必须显式指定）</option>
+                    <option value="first_available">first_available（默认取第一台）</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-panel-frontend" class="settings-panel hidden">
+          <div class="schedule-form">
+            <div class="settings-group">
+              <div class="settings-group-title">回放与结果区</div>
+              <div class="settings-group-body">
+                <label class="schedule-field">
+                  <span>TIMELINE_DEFAULT_SPEED（回放默认倍速）</span>
+                  <select id="setting-timeline-default-speed">
+                    <option value="1">1x</option>
+                    <option value="2">2x</option>
+                    <option value="4">4x</option>
+                    <option value="8">8x</option>
+                  </select>
+                </label>
+                <label class="schedule-field schedule-check-field">
+                  <span>TIMELINE_AUTO_OPEN_AFTER_RUN（执行后自动加载回放）</span>
+                  <div class="schedule-check-row">
+                    <input id="setting-timeline-auto-open-after-run" type="checkbox" />
+                  </div>
+                </label>
+                <label class="schedule-field">
+                  <span>DEFAULT_BOTTOM_TAB（启动默认底部 Tab）</span>
+                  <select id="setting-default-bottom-tab">
+                    <option value="logs">执行日志</option>
+                    <option value="report">执行报告</option>
+                    <option value="timeline">执行回放</option>
+                    <option value="preview">结果预览</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">布局偏好</div>
+              <div class="settings-group-body">
+                <label class="schedule-field schedule-check-field">
+                  <span>SIDEBAR_COLLAPSED_DEFAULT（启动默认收起节点库）</span>
+                  <div class="schedule-check-row">
+                    <input id="setting-sidebar-collapsed-default" type="checkbox" />
+                  </div>
+                </label>
+                <label class="schedule-field schedule-check-field">
+                  <span>BOTTOM_PANEL_COLLAPSED_DEFAULT（启动默认收起底部面板）</span>
+                  <div class="schedule-check-row">
+                    <input id="setting-bottom-panel-collapsed-default" type="checkbox" />
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span>保存后立即生效，并持久化到 schedules/runtime_settings.json</span>
+        <div class="modal-actions">
+          <button onclick="closeExecutionSettingsModal()">取消</button>
+          <button class="primary" onclick="saveExecutionSettings()">保存</button>
         </div>
       </div>
     </div>

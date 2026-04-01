@@ -8,10 +8,10 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 
+import webapp_state as state
 from routes.api_response import err
 from helpers import _prepare_workflow_export_paths, _write_execution_report
 from webapp_state import (
-    MANUAL_RUN_TIMEOUT_SEC,
     WORKFLOWS_DIR,
     _end_manual_run,
     _try_begin_manual_run,
@@ -28,7 +28,6 @@ from src.adbflow.persistence import insert_run
 from src.adbflow.workflow_contract import normalize_workflow, schema_public
 
 workflows_bp = Blueprint("workflows", __name__)
-_STREAM_EVENT_QUEUE_SIZE = 1024
 
 
 class _RunEventCtx:
@@ -181,7 +180,7 @@ def run_workflow():
             cancel_event=cancel_event,
             on_event=on_event,
             trigger="manual",
-            timeout_sec=MANUAL_RUN_TIMEOUT_SEC,
+            timeout_sec=state.MANUAL_RUN_TIMEOUT_SEC,
             dedupe_key="manual:run",
         )
         report_path = _write_execution_report(
@@ -281,7 +280,9 @@ def run_workflow_stream():
     prepared_workflow = _prepare_workflow_export_paths(normalized_workflow, trigger="manual")
     run_id = new_run_id("man")
 
-    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=_STREAM_EVENT_QUEUE_SIZE)
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue(
+        maxsize=max(1, int(state.STREAM_EVENT_QUEUE_SIZE))
+    )
     result_holder: dict[str, ExecutionResult] = {}
     error_holder: dict[str, str] = {}
     dropped_events: dict[str, int] = {"log": 0, "event": 0}
@@ -321,7 +322,7 @@ def run_workflow_stream():
                 on_event=on_event,
                 cancel_event=cancel_event,
                 trigger="manual",
-                timeout_sec=MANUAL_RUN_TIMEOUT_SEC,
+                timeout_sec=state.MANUAL_RUN_TIMEOUT_SEC,
                 dedupe_key="manual:run",
             )
             result_holder["result"] = result
@@ -400,7 +401,8 @@ def run_workflow_stream():
             _end_manual_run()
             dropped_log = int(dropped_events.get("log", 0))
             dropped_evt = int(dropped_events.get("event", 0))
-            if dropped_log or dropped_evt:
+            dropped_total = dropped_log + dropped_evt
+            if dropped_total > 0 and dropped_total >= max(0, int(state.STREAM_DROP_WARN_THRESHOLD)):
                 _queue_put_nowait_safe(
                     event_queue,
                     {

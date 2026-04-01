@@ -19,7 +19,6 @@ from helpers import (
     _write_execution_report,
 )
 from webapp_state import (
-    SCHEDULE_RUN_TIMEOUT_SEC,
     WORKFLOWS_DIR,
     _MANUAL_RUN_LOCK,
     _MANUAL_RUN_STATE,
@@ -46,7 +45,6 @@ from src.adbflow.persistence import (
 from src.adbflow.workflow_contract import normalize_workflow
 
 schedules_bp = Blueprint("schedules", __name__)
-_STREAM_EVENT_QUEUE_SIZE = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -72,10 +70,12 @@ def create_schedule():
     payload = request.get_json(silent=True) or {}
     workflow_name = str(payload.get("workflow_name", "")).strip()
     workflow_data = payload.get("workflow")
-    interval_sec = int(payload.get("interval_sec", 300) or 300)
-    max_runs = max(0, int(payload.get("max_runs", 0) or 0))
+    interval_default = max(10, int(state.SCHEDULE_DEFAULT_INTERVAL_SEC))
+    max_runs_default = max(0, int(state.SCHEDULE_DEFAULT_MAX_RUNS))
+    interval_sec = int(payload.get("interval_sec", interval_default) or interval_default)
+    max_runs = max(0, int(payload.get("max_runs", max_runs_default) or max_runs_default))
     task_name = str(payload.get("task_name", "")).strip()
-    run_now = payload.get("run_now") is True
+    run_now = bool(payload.get("run_now", bool(state.SCHEDULE_AUTO_RUN_ON_CREATE)))
     if interval_sec < 10:
         interval_sec = 10
 
@@ -243,7 +243,9 @@ def run_schedule_now_stream():
     cancel_event = threading.Event()
     _set_schedule_cancel_event(cancel_event)
 
-    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=_STREAM_EVENT_QUEUE_SIZE)
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue(
+        maxsize=max(1, int(state.STREAM_EVENT_QUEUE_SIZE))
+    )
     result_holder: dict[str, object] = {}
     error_holder: dict[str, str] = {}
     dropped_events: dict[str, int] = {"log": 0, "event": 0}
@@ -339,7 +341,7 @@ def run_schedule_now_stream():
                     on_event=lambda evt: on_event(evt, run_id),
                     cancel_event=cancel_event,
                     trigger=f"schedule:{schedule_id}:batch:{batch_no}",
-                    timeout_sec=SCHEDULE_RUN_TIMEOUT_SEC,
+                    timeout_sec=state.SCHEDULE_RUN_TIMEOUT_SEC,
                     dedupe_key=f"schedule:{schedule_id}",
                 )
                 b_ok = True
@@ -477,7 +479,8 @@ def run_schedule_now_stream():
         _flush_run_events(event_ctx)
         dropped_log = int(dropped_events.get("log", 0))
         dropped_evt = int(dropped_events.get("event", 0))
-        if dropped_log or dropped_evt:
+        dropped_total = dropped_log + dropped_evt
+        if dropped_total > 0 and dropped_total >= max(0, int(state.STREAM_DROP_WARN_THRESHOLD)):
             _queue_put_nowait_safe(
                 {
                     "type": "log",
@@ -882,12 +885,12 @@ def _run_schedule_once(schedule_id: str, force: bool = False) -> None:
                     run_id=run_id,
                     schedule_id=schedule_id,
                     evt=evt,
-                    event_ctx=event_ctx,
-                ),
-                trigger=f"schedule:{schedule_id}:batch:{batch_no}",
-                timeout_sec=SCHEDULE_RUN_TIMEOUT_SEC,
-                dedupe_key=f"schedule:{schedule_id}",
-            )
+                event_ctx=event_ctx,
+            ),
+            trigger=f"schedule:{schedule_id}:batch:{batch_no}",
+            timeout_sec=state.SCHEDULE_RUN_TIMEOUT_SEC,
+            dedupe_key=f"schedule:{schedule_id}",
+        )
             ok = True
         except (ExecutionTimeoutError, TimeoutError) as exc:
             err = str(exc)

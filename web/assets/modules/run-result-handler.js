@@ -227,7 +227,14 @@
         setRunInfo(finalRunId, String(payload.path || ""));
       }
       renderExecutionReport(report, String(payload.path || ""), sourceText);
-      await openTimelineByReportPath(String(payload.path || ""), sourceText, finalRunId);
+      const shouldAutoLoadTimeline = typeof deps.shouldAutoLoadTimeline === "function"
+        ? deps.shouldAutoLoadTimeline()
+        : true;
+      if (shouldAutoLoadTimeline) {
+        await openTimelineByReportPath(String(payload.path || ""), sourceText, finalRunId);
+      } else if (typeof clearTimelinePanel === "function") {
+        clearTimelinePanel("运行回放：已关闭自动加载");
+      }
       if (report && typeof report === "object" && report.outputs && typeof report.outputs === "object") {
         if (typeof applyOutputsToWorkspace === "function") {
           await applyOutputsToWorkspace(report.outputs);

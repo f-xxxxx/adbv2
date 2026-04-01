@@ -10,6 +10,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+import webapp_state as state
 from routes.api_response import err
 from helpers import _open_in_file_manager
 from webapp_state import (
@@ -98,6 +99,64 @@ def metrics():
         return err("top_n 必须是整数", ErrorCode.BAD_REQUEST, 400)
     data = metrics_summary(top_n=top_n)
     return jsonify({"ok": True, **data})
+
+
+@utils_bp.get("/api/settings/execution")
+def get_execution_settings():
+    all_settings = state.get_runtime_settings()
+    execution_keys = {
+        "EXEC_DEFAULT_TIMEOUT_SEC",
+        "EXEC_DEFAULT_MAX_RETRIES",
+        "EXEC_RETRY_BACKOFF_SEC",
+        "EXEC_CIRCUIT_FAIL_THRESHOLD",
+        "EXEC_CIRCUIT_OPEN_SEC",
+        "MANUAL_RUN_TIMEOUT_SEC",
+        "SCHEDULE_RUN_TIMEOUT_SEC",
+    }
+    settings = {k: all_settings[k] for k in execution_keys if k in all_settings}
+    return jsonify({"ok": True, "settings": settings})
+
+
+@utils_bp.post("/api/settings/execution")
+def update_execution_settings():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return err("请求体必须是 JSON 对象", ErrorCode.BAD_REQUEST, 400)
+    try:
+        settings = state.update_runtime_settings(payload)
+    except ValueError as exc:
+        return err(str(exc), ErrorCode.BAD_REQUEST, 400)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"更新执行参数失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
+    execution_keys = {
+        "EXEC_DEFAULT_TIMEOUT_SEC",
+        "EXEC_DEFAULT_MAX_RETRIES",
+        "EXEC_RETRY_BACKOFF_SEC",
+        "EXEC_CIRCUIT_FAIL_THRESHOLD",
+        "EXEC_CIRCUIT_OPEN_SEC",
+        "MANUAL_RUN_TIMEOUT_SEC",
+        "SCHEDULE_RUN_TIMEOUT_SEC",
+    }
+    return jsonify({"ok": True, "settings": {k: settings[k] for k in execution_keys if k in settings}})
+
+
+@utils_bp.get("/api/settings")
+def get_all_settings():
+    return jsonify({"ok": True, "settings": state.get_runtime_settings()})
+
+
+@utils_bp.post("/api/settings")
+def update_all_settings():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return err("请求体必须是 JSON 对象", ErrorCode.BAD_REQUEST, 400)
+    try:
+        settings = state.update_runtime_settings(payload)
+    except ValueError as exc:
+        return err(str(exc), ErrorCode.BAD_REQUEST, 400)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"更新配置失败：{exc}", ErrorCode.INTERNAL_ERROR, 500)
+    return jsonify({"ok": True, "settings": settings})
 
 
 @utils_bp.get("/api/run/timeline")
@@ -272,7 +331,7 @@ def tap_picker_capture_screen():
         if device_id not in devices:
             return err(f"指定设备不在线：{device_id}", ErrorCode.DEVICE_ERROR, 400)
     else:
-        if len(devices) > 1:
+        if len(devices) > 1 and str(state.ADB_DEVICE_SELECT_POLICY) != "first_available":
             return err("检测到多台设备，请在开始节点中明确设置设备编号", ErrorCode.BAD_REQUEST, 400)
         device_id = devices[0]
 
@@ -304,10 +363,11 @@ def tap_picker_capture_screen():
     now_ts = time.time()
     with _TAP_PICKER_TEMP_LOCK:
         _TAP_PICKER_TEMP[token] = {"path": str(local_path), "created_at": now_ts}
+        ttl_sec = max(60.0, float(state.TAP_PICKER_TMP_TTL_SEC))
         expired = [
             tk
             for tk, meta in _TAP_PICKER_TEMP.items()
-            if now_ts - float(meta.get("created_at", now_ts)) > 600.0
+            if now_ts - float(meta.get("created_at", now_ts)) > ttl_sec
         ]
         for tk in expired:
             meta = _TAP_PICKER_TEMP.pop(tk, None)

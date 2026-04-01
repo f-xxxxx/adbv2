@@ -10,6 +10,7 @@ from routes.utils import utils_bp
 from routes.workflows import workflows_bp
 from src.adbflow.observability import setup_logging
 from src.adbflow.tmp_guardian import start_tmp_cleanup_daemon
+import webapp_state as state
 from webapp_state import OUTPUTS_DIR
 
 app = Flask(__name__, template_folder="web", static_folder="web")
@@ -37,9 +38,12 @@ def _try_raise_fd_limit() -> None:
 def _warmup_ocr() -> None:
     from src.adbflow.nodes import get_ocr_reader
 
+    if not bool(state.OCR_WARMUP_ON_START):
+        return
+
     def _do_warmup():
         try:
-            get_ocr_reader(["ch_sim", "en"], gpu=False)
+            get_ocr_reader(list(state.OCR_LANG_LIST), gpu=bool(state.OCR_GPU_ENABLED))
         except Exception:
             pass
 
@@ -49,7 +53,11 @@ def _warmup_ocr() -> None:
 _warmup_ocr()
 _try_raise_fd_limit()
 _ensure_scheduler_started()
-start_tmp_cleanup_daemon(OUTPUTS_DIR / "tmp", interval_sec=600, ttl_sec=3600)
+start_tmp_cleanup_daemon(
+    OUTPUTS_DIR / "tmp",
+    interval_sec=max(10, int(state.TMP_CLEANUP_INTERVAL_SEC)),
+    ttl_sec=max(60, int(state.TMP_CLEANUP_TTL_SEC)),
+)
 
 
 if __name__ == "__main__":

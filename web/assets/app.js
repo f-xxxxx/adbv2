@@ -133,6 +133,41 @@ const graph = new LGraph();
     let _runResultHandler = null;
     let _previewRenderer = null;
     let workflowSchemaMap = {};
+    let appSettingsCache = {};
+    let settingsStartupApplied = false;
+
+    const SETTINGS_FIELD_DEFS = [
+      { key: "EXEC_DEFAULT_TIMEOUT_SEC", id: "setting-exec-default-timeout-sec", type: "float" },
+      { key: "EXEC_DEFAULT_MAX_RETRIES", id: "setting-exec-default-max-retries", type: "int" },
+      { key: "EXEC_RETRY_BACKOFF_SEC", id: "setting-exec-retry-backoff-sec", type: "float" },
+      { key: "EXEC_CIRCUIT_FAIL_THRESHOLD", id: "setting-exec-circuit-fail-threshold", type: "int" },
+      { key: "EXEC_CIRCUIT_OPEN_SEC", id: "setting-exec-circuit-open-sec", type: "float" },
+      { key: "MANUAL_RUN_TIMEOUT_SEC", id: "setting-manual-run-timeout-sec", type: "float" },
+      { key: "SCHEDULE_RUN_TIMEOUT_SEC", id: "setting-schedule-run-timeout-sec", type: "float" },
+      { key: "EXECUTION_QUEUE_MAX_SIZE", id: "setting-execution-queue-max-size", type: "int" },
+      { key: "STREAM_EVENT_QUEUE_SIZE", id: "setting-stream-event-queue-size", type: "int" },
+      { key: "STREAM_DROP_WARN_THRESHOLD", id: "setting-stream-drop-warn-threshold", type: "int" },
+      { key: "SCHEDULE_DEFAULT_INTERVAL_SEC", id: "setting-schedule-default-interval-sec", type: "int" },
+      { key: "SCHEDULE_DEFAULT_MAX_RUNS", id: "setting-schedule-default-max-runs", type: "int" },
+      { key: "SCHEDULE_AUTO_RUN_ON_CREATE", id: "setting-schedule-auto-run-on-create", type: "bool" },
+      { key: "SCHEDULE_LIST_PAGE_SIZE", id: "setting-schedule-list-page-size", type: "int" },
+      { key: "TMP_CLEANUP_INTERVAL_SEC", id: "setting-tmp-cleanup-interval-sec", type: "int" },
+      { key: "TMP_CLEANUP_TTL_SEC", id: "setting-tmp-cleanup-ttl-sec", type: "int" },
+      { key: "TAP_PICKER_TMP_TTL_SEC", id: "setting-tap-picker-tmp-ttl-sec", type: "int" },
+      { key: "REPORT_KEEP_DAYS", id: "setting-report-keep-days", type: "int" },
+      { key: "REPORT_MAX_FILES", id: "setting-report-max-files", type: "int" },
+      { key: "OCR_LANG_LIST", id: "setting-ocr-lang-list", type: "csv" },
+      { key: "OCR_GPU_ENABLED", id: "setting-ocr-gpu-enabled", type: "bool" },
+      { key: "OCR_WARMUP_ON_START", id: "setting-ocr-warmup-on-start", type: "bool" },
+      { key: "ADB_SHELL_TIMEOUT_SEC", id: "setting-adb-shell-timeout-sec", type: "float" },
+      { key: "ADB_PULL_TIMEOUT_SEC", id: "setting-adb-pull-timeout-sec", type: "float" },
+      { key: "ADB_DEVICE_SELECT_POLICY", id: "setting-adb-device-select-policy", type: "string" },
+      { key: "TIMELINE_DEFAULT_SPEED", id: "setting-timeline-default-speed", type: "float" },
+      { key: "TIMELINE_AUTO_OPEN_AFTER_RUN", id: "setting-timeline-auto-open-after-run", type: "bool" },
+      { key: "DEFAULT_BOTTOM_TAB", id: "setting-default-bottom-tab", type: "string" },
+      { key: "SIDEBAR_COLLAPSED_DEFAULT", id: "setting-sidebar-collapsed-default", type: "bool" },
+      { key: "BOTTOM_PANEL_COLLAPSED_DEFAULT", id: "setting-bottom-panel-collapsed-default", type: "bool" },
+    ];
 
     function ensureRunResultHandler() {
       if (_runResultHandler || !_runResultHandlerModule.createRunResultHandler) return;
@@ -161,6 +196,7 @@ const graph = new LGraph();
         getCurrentReportPath: () => currentReportPath,
         formatEpochTime,
         escapeHtml,
+        shouldAutoLoadTimeline: () => !!appSettingsCache.TIMELINE_AUTO_OPEN_AFTER_RUN,
         clearPreviewImagesOnNodes,
         resetNodeProgressHighlight,
         startExecutionProgress,
@@ -1176,10 +1212,13 @@ const graph = new LGraph();
       const intervalInput = document.getElementById("schedule-interval-input");
       const maxRunsInput = document.getElementById("schedule-max-runs-input");
       const runNowInput = document.getElementById("schedule-run-now-input");
+      const defaultInterval = Math.max(10, Math.trunc(Number(appSettingsCache.SCHEDULE_DEFAULT_INTERVAL_SEC || 300)));
+      const defaultMaxRuns = Math.max(0, Math.trunc(Number(appSettingsCache.SCHEDULE_DEFAULT_MAX_RUNS || 0)));
+      const defaultRunNow = !!appSettingsCache.SCHEDULE_AUTO_RUN_ON_CREATE;
       if (nameInput) nameInput.value = "";
-      if (intervalInput) intervalInput.value = "300";
-      if (maxRunsInput) maxRunsInput.value = "0";
-      if (runNowInput) runNowInput.checked = false;
+      if (intervalInput) intervalInput.value = String(defaultInterval);
+      if (maxRunsInput) maxRunsInput.value = String(defaultMaxRuns);
+      if (runNowInput) runNowInput.checked = defaultRunNow;
       if (_modalController) _modalController.open("schedule-modal");
       else {
         const modal = document.getElementById("schedule-modal");
@@ -1198,6 +1237,178 @@ const graph = new LGraph();
 
     function createScheduleTask() {
       openScheduleModal();
+    }
+
+    async function parseSettingsResponse(res, actionLabel) {
+      const raw = await res.text();
+      let data = null;
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (_err) {
+        const brief = String(raw || "").trim().slice(0, 80).replace(/\s+/g, " ");
+        if (brief.startsWith("<!doctype") || brief.startsWith("<html")) {
+          throw new Error(`${actionLabel}失败：服务返回了 HTML 页面，请重启后端再试`);
+        }
+        throw new Error(`${actionLabel}失败：接口返回非 JSON 响应`);
+      }
+      if (!res.ok || !data || data.ok !== true) {
+        throw new Error((data && data.error) || `${actionLabel}失败`);
+      }
+      return data;
+    }
+
+    function switchSettingsTab(tabKey) {
+      const tabs = Array.from(document.querySelectorAll("[data-settings-tab]"));
+      for (const btn of tabs) {
+        const on = String(btn.getAttribute("data-settings-tab") || "") === String(tabKey || "");
+        btn.classList.toggle("active", on);
+      }
+      const panels = ["execution", "scheduler", "cleanup", "ocradb", "frontend"];
+      for (const key of panels) {
+        const panel = document.getElementById(`settings-panel-${key}`);
+        if (!panel) continue;
+        panel.classList.toggle("hidden", key !== tabKey);
+      }
+    }
+
+    function writeSettingsToForm(settings) {
+      for (const def of SETTINGS_FIELD_DEFS) {
+        const el = document.getElementById(def.id);
+        if (!el) continue;
+        const value = settings ? settings[def.key] : undefined;
+        if (def.type === "bool") {
+          el.checked = !!value;
+          continue;
+        }
+        if (def.type === "csv") {
+          if (Array.isArray(value)) el.value = value.join(",");
+          else el.value = value == null ? "" : String(value);
+          continue;
+        }
+        el.value = value == null ? "" : String(value);
+      }
+    }
+
+    function readSettingsFromForm() {
+      const payload = {};
+      for (const def of SETTINGS_FIELD_DEFS) {
+        const el = document.getElementById(def.id);
+        if (!el) continue;
+        if (def.type === "bool") {
+          payload[def.key] = !!el.checked;
+          continue;
+        }
+        const raw = String(el.value == null ? "" : el.value).trim();
+        if (def.type === "csv") {
+          payload[def.key] = raw
+            .split(",")
+            .map((x) => String(x || "").trim())
+            .filter(Boolean);
+          continue;
+        }
+        if (def.type === "int") {
+          const n = Number.parseInt(raw, 10);
+          if (!Number.isFinite(n)) throw new Error(`${def.key} 不是有效整数`);
+          payload[def.key] = Math.trunc(n);
+          continue;
+        }
+        if (def.type === "float") {
+          const n = Number(raw);
+          if (!Number.isFinite(n)) throw new Error(`${def.key} 不是有效数字`);
+          payload[def.key] = n;
+          continue;
+        }
+        payload[def.key] = raw;
+      }
+      return payload;
+    }
+
+    function applySettingsToUiState(settings, startupOnly = false) {
+      const s = settings || {};
+      const pageSize = Number(s.SCHEDULE_LIST_PAGE_SIZE || 0);
+      if (Number.isFinite(pageSize) && pageSize > 0) {
+        scheduleListState.pageSize = Math.trunc(pageSize);
+      }
+      if (!startupOnly) return;
+      if (settingsStartupApplied) return;
+      settingsStartupApplied = true;
+
+      const layoutEl = document.getElementById("layout");
+      const workspaceEl = document.getElementById("workspace");
+      const wantSidebarCollapsed = !!s.SIDEBAR_COLLAPSED_DEFAULT;
+      const wantBottomCollapsed = !!s.BOTTOM_PANEL_COLLAPSED_DEFAULT;
+      if (layoutEl) {
+        layoutEl.classList.toggle("sidebar-collapsed", wantSidebarCollapsed);
+      }
+      if (workspaceEl) {
+        workspaceEl.classList.toggle("bottom-collapsed", wantBottomCollapsed);
+      }
+      sidebarCollapsed = wantSidebarCollapsed;
+      bottomCollapsed = wantBottomCollapsed;
+      const tab = String(s.DEFAULT_BOTTOM_TAB || "logs");
+      if (tab === "logs" || tab === "report" || tab === "timeline" || tab === "preview") {
+        switchBottomTab(tab);
+      }
+    }
+
+    async function fetchAllSettings() {
+      const res = await fetch("/api/settings");
+      const data = await parseSettingsResponse(res, "读取设置");
+      return data.settings || {};
+    }
+
+    async function loadExecutionSettings() {
+      const settings = await fetchAllSettings();
+      appSettingsCache = settings;
+      writeSettingsToForm(settings);
+      applySettingsToUiState(settings, false);
+    }
+
+    async function openExecutionSettingsModal() {
+      try {
+        setStatus("正在读取设置...");
+        await loadExecutionSettings();
+        switchSettingsTab("execution");
+        if (_modalController) _modalController.open("execution-settings-modal");
+        else {
+          const modal = document.getElementById("execution-settings-modal");
+          if (modal) modal.classList.remove("hidden");
+        }
+        setStatus("已加载设置");
+      } catch (err) {
+        log("读取设置失败: " + err.message);
+        setStatus("读取设置失败");
+      }
+    }
+
+    function closeExecutionSettingsModal() {
+      if (_modalController) _modalController.close("execution-settings-modal");
+      else {
+        const modal = document.getElementById("execution-settings-modal");
+        if (modal) modal.classList.add("hidden");
+      }
+    }
+
+    async function saveExecutionSettings() {
+      try {
+        const payload = readSettingsFromForm();
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await parseSettingsResponse(res, "保存设置");
+        appSettingsCache = data.settings || payload;
+        writeSettingsToForm(appSettingsCache);
+        applySettingsToUiState(appSettingsCache, false);
+        log("设置已更新");
+        setStatus("设置已保存并生效");
+        closeExecutionSettingsModal();
+        await refreshRuntimeStatus(true);
+      } catch (err) {
+        log("保存设置失败: " + err.message);
+        setStatus("保存设置失败");
+      }
     }
 
     async function submitScheduleTask() {
@@ -3572,6 +3783,11 @@ const graph = new LGraph();
         timelinePlayIndex = -1;
         meta.textContent = String(payload.metaText || `${sourceText}：无节点数据`);
         body.innerHTML = String(payload.html || "");
+        const speedEl = document.getElementById("timeline-speed-select");
+        if (speedEl) {
+          const preferred = Number(appSettingsCache.TIMELINE_DEFAULT_SPEED || 4);
+          speedEl.value = Number.isFinite(preferred) ? String(preferred) : "4";
+        }
         return;
       }
 
@@ -3656,6 +3872,11 @@ const graph = new LGraph();
       }).join("");
 
       body.innerHTML = `${controlsHtml}<div class="timeline-list">${listHtml}</div>`;
+      const speedEl = document.getElementById("timeline-speed-select");
+      if (speedEl) {
+        const preferred = Number(appSettingsCache.TIMELINE_DEFAULT_SPEED || 4);
+        speedEl.value = Number.isFinite(preferred) ? String(preferred) : "4";
+      }
     }
 
     function toggleTimelinePlayback() {
@@ -3936,6 +4157,7 @@ const graph = new LGraph();
           { id: "schedule-modal", close: closeScheduleModal },
           { id: "schedule-list-modal", close: closeScheduleListModal },
           { id: "schedule-report-modal", close: closeScheduleReportModal },
+          { id: "execution-settings-modal", close: closeExecutionSettingsModal },
           { id: "regions-modal", close: closeRegionsEditor },
         ];
         for (const item of escModalClosers) {
@@ -3975,15 +4197,35 @@ const graph = new LGraph();
     const scheduleNameInput = document.getElementById("schedule-name-input");
     const scheduleIntervalInput = document.getElementById("schedule-interval-input");
     const scheduleMaxRunsInput = document.getElementById("schedule-max-runs-input");
+    const executionSettingInputIds = SETTINGS_FIELD_DEFS.map((x) => x.id);
     const onScheduleInputEnter = (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
         submitScheduleTask();
       }
     };
+    const onExecutionSettingsEnter = (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      saveExecutionSettings();
+    };
     if (scheduleNameInput) scheduleNameInput.addEventListener("keydown", onScheduleInputEnter);
     if (scheduleIntervalInput) scheduleIntervalInput.addEventListener("keydown", onScheduleInputEnter);
     if (scheduleMaxRunsInput) scheduleMaxRunsInput.addEventListener("keydown", onScheduleInputEnter);
+    for (const id of executionSettingInputIds) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("keydown", onExecutionSettingsEnter);
+    }
+
+    async function bootstrapSettings() {
+      try {
+        const settings = await fetchAllSettings();
+        appSettingsCache = settings;
+        writeSettingsToForm(settings);
+        applySettingsToUiState(settings, true);
+      } catch (_err) {
+      }
+    }
 
     updateRunButtonState();
     refreshRuntimeStatus(true);
@@ -3995,12 +4237,14 @@ const graph = new LGraph();
       refreshLatestScheduleOutcome(true);
     }, 3000);
 
-    loadWorkflowSchema();
-    refreshDevices();
-    loadDefaultWorkflow();
-    switchBottomTab("logs");
-    setTimeout(() => {
-      canvas.resize();
-      fitToView();
-    }, 80);
+    bootstrapSettings().finally(() => {
+      loadWorkflowSchema();
+      refreshDevices();
+      loadDefaultWorkflow();
+      if (!settingsStartupApplied) switchBottomTab("logs");
+      setTimeout(() => {
+        canvas.resize();
+        fitToView();
+      }, 80);
+    });
 

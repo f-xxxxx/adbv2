@@ -24,8 +24,8 @@ class CommandResult:
 _ADB_RUN_SEMAPHORE = threading.BoundedSemaphore(value=2)
 
 
-def _run(cmd: list[str], *, text: bool = True, check: bool = True) -> CommandResult:
-    timeout_sec = 25.0
+def _run(cmd: list[str], *, text: bool = True, check: bool = True, timeout_sec: float = 25.0) -> CommandResult:
+    timeout_sec = max(1.0, float(timeout_sec))
     max_attempts = 3
     with _ADB_RUN_SEMAPHORE:
         for attempt in range(1, max_attempts + 1):
@@ -54,9 +54,17 @@ class ADBClient:
     def __init__(self) -> None:
         self._ensured_remote_dirs: set[tuple[str, str]] = set()
         self._ensured_remote_dirs_lock = threading.Lock()
+        self._shell_timeout_sec = 25.0
+        self._pull_timeout_sec = 25.0
+
+    def configure_timeouts(self, *, shell_timeout_sec: float | None = None, pull_timeout_sec: float | None = None) -> None:
+        if shell_timeout_sec is not None:
+            self._shell_timeout_sec = max(1.0, float(shell_timeout_sec))
+        if pull_timeout_sec is not None:
+            self._pull_timeout_sec = max(1.0, float(pull_timeout_sec))
 
     def list_devices(self) -> list[str]:
-        out = _run(["adb", "devices"]).stdout.splitlines()
+        out = _run(["adb", "devices"], timeout_sec=self._shell_timeout_sec).stdout.splitlines()
         devices: list[str] = []
         for line in out[1:]:
             line = line.strip()
@@ -68,17 +76,17 @@ class ADBClient:
 
     def shell(self, device_id: str, *args: str, check: bool = True) -> CommandResult:
         cmd = ["adb", "-s", device_id, "shell", *args]
-        return _run(cmd, check=check)
+        return _run(cmd, check=check, timeout_sec=self._shell_timeout_sec)
 
     def pull(self, device_id: str, remote_path: str, local_path: str) -> None:
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        _run(["adb", "-s", device_id, "pull", remote_path, local_path], check=True)
+        _run(["adb", "-s", device_id, "pull", remote_path, local_path], check=True, timeout_sec=self._pull_timeout_sec)
 
     def push(self, device_id: str, local_path: str, remote_path: str) -> None:
         src = Path(local_path).expanduser().resolve()
         if not src.exists() or not src.is_file():
             raise ADBError(f"本地文件不存在：{src}")
-        _run(["adb", "-s", device_id, "push", str(src), remote_path], check=True)
+        _run(["adb", "-s", device_id, "push", str(src), remote_path], check=True, timeout_sec=self._pull_timeout_sec)
 
     def ensure_remote_dir(self, device_id: str, remote_dir: str, *, force: bool = False) -> None:
         normalized = str(remote_dir or "").strip()
