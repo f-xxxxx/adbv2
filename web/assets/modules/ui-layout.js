@@ -6,6 +6,7 @@
       sidebarCollapsed,
       layoutEl,
       buttonEl,
+      onUpdateButton,
       onStatus,
       onAfterToggle,
     } = opts || {};
@@ -13,7 +14,9 @@
     if (layoutEl) {
       layoutEl.classList.toggle("sidebar-collapsed", next);
     }
-    if (buttonEl) {
+    if (typeof onUpdateButton === "function") {
+      onUpdateButton(next);
+    } else if (buttonEl) {
       buttonEl.innerHTML = next
         ? '<span class="btn-icon">&#9654;</span>显示节点库'
         : '<span class="btn-icon">&#9664;</span>收起节点库';
@@ -41,8 +44,8 @@
     if (logPanelEl) logPanelEl.classList.toggle("bottom-collapsed", next);
     if (buttonEl) {
       buttonEl.innerHTML = next
-        ? '<span class="btn-icon">&#9650;</span>显示面板'
-        : '<span class="btn-icon">&#9660;</span>收起面板';
+        ? '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-panel-up"></use></svg>显示面板'
+        : '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-panel-down"></use></svg>收起面板';
     }
     if (typeof onStatus === "function") {
       onStatus(next ? "底部面板已收起" : "底部面板已显示");

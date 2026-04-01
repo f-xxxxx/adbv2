@@ -828,13 +828,13 @@ const graph = new LGraph();
       if (workflowRunning || schedulerRunning) {
         btn.classList.remove("primary");
         btn.classList.add("warn");
-        btn.innerHTML = `<span class="btn-icon">&#9209;</span>停止`;
+        btn.innerHTML = '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-stop"></use></svg>停止';
         updateTopbarActionsState();
         return;
       }
       btn.classList.remove("warn");
       btn.classList.add("primary");
-      btn.innerHTML = '<span class="btn-icon">&#9654;</span>执行工作流';
+      btn.innerHTML = '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-play"></use></svg>执行工作流';
       updateTopbarActionsState();
     }
 
@@ -1344,6 +1344,7 @@ const graph = new LGraph();
         workspaceEl.classList.toggle("bottom-collapsed", wantBottomCollapsed);
       }
       sidebarCollapsed = wantSidebarCollapsed;
+      updateSidebarToggleButtonState(sidebarCollapsed);
       bottomCollapsed = wantBottomCollapsed;
       const tab = String(s.DEFAULT_BOTTOM_TAB || "logs");
       if (tab === "logs" || tab === "report" || tab === "timeline" || tab === "preview") {
@@ -2021,12 +2022,25 @@ const graph = new LGraph();
       setStatus("日志已清空");
     }
 
+    function updateSidebarToggleButtonState(collapsed) {
+      const btn = document.getElementById("toggle-sidebar-btn");
+      if (!btn) return;
+      const isCollapsed = !!collapsed;
+      const text = isCollapsed ? "显示边栏" : "收起边栏";
+      btn.setAttribute("title", text);
+      btn.setAttribute("aria-label", text);
+      btn.setAttribute("data-collapsed", isCollapsed ? "1" : "0");
+      const pill = document.getElementById("sidebar-toggle-pill");
+      if (pill) pill.textContent = text;
+    }
+
     function toggleSidebar() {
       if (_uiLayout.toggleSidebarLayout) {
         sidebarCollapsed = _uiLayout.toggleSidebarLayout({
           sidebarCollapsed,
           layoutEl: document.getElementById("layout"),
           buttonEl: document.getElementById("toggle-sidebar-btn"),
+          onUpdateButton: updateSidebarToggleButtonState,
           onStatus: setStatus,
           onAfterToggle: () => {
             setTimeout(() => {
@@ -2039,11 +2053,8 @@ const graph = new LGraph();
       }
       sidebarCollapsed = !sidebarCollapsed;
       const layout = document.getElementById("layout");
-      const btn = document.getElementById("toggle-sidebar-btn");
       layout.classList.toggle("sidebar-collapsed", sidebarCollapsed);
-      btn.innerHTML = sidebarCollapsed
-        ? '<span class="btn-icon">&#9654;</span>显示节点库'
-        : '<span class="btn-icon">&#9664;</span>收起节点库';
+      updateSidebarToggleButtonState(sidebarCollapsed);
       setStatus(sidebarCollapsed ? "节点库已收起" : "节点库已展开");
       setTimeout(() => {
         canvas.resize();
@@ -2078,8 +2089,8 @@ const graph = new LGraph();
       workspace.classList.toggle("bottom-collapsed", bottomCollapsed);
       logPanel.classList.toggle("bottom-collapsed", bottomCollapsed);
       btn.innerHTML = bottomCollapsed
-        ? '<span class="btn-icon">&#9650;</span>显示面板'
-        : '<span class="btn-icon">&#9660;</span>收起面板';
+        ? '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-panel-up"></use></svg>显示面板'
+        : '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-panel-down"></use></svg>收起面板';
       setStatus(bottomCollapsed ? "底部面板已收起" : "底部面板已显示");
       setTimeout(() => {
         canvas.resize();
@@ -4139,9 +4150,29 @@ const graph = new LGraph();
       }
     }
 
+    function inferStatusTone(text) {
+      const t = String(text || "").toLowerCase();
+      if (!t) return "idle";
+      const errorWords = ["失败", "错误", "异常", "超时", "取消", "中止", "error", "failed", "exception", "timeout"];
+      if (errorWords.some((k) => t.includes(k))) return "error";
+      const warnWords = ["跳过", "拥塞", "告警", "warn", "busy"];
+      if (warnWords.some((k) => t.includes(k))) return "warn";
+      const runningWords = ["执行中", "读取", "加载", "刷新", "正在", "running", "loading"];
+      if (runningWords.some((k) => t.includes(k))) return "running";
+      const successWords = ["完成", "成功", "已", "保存", "适配", "就绪", "done", "success"];
+      if (successWords.some((k) => t.includes(k))) return "success";
+      return "idle";
+    }
+
     function setStatus(text) {
       const el = document.getElementById("status");
-      el.textContent = text;
+      if (!el) return;
+      const tone = inferStatusTone(text);
+      el.classList.remove("status-idle", "status-running", "status-success", "status-error", "status-warn");
+      el.classList.add(`status-${tone}`);
+      const textEl = document.getElementById("status-text");
+      if (textEl) textEl.textContent = String(text || "");
+      else el.textContent = String(text || "");
     }
 
     document.addEventListener("keydown", (event) => {

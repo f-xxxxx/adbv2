@@ -10,23 +10,45 @@
   <link rel="stylesheet" href="/web/assets/app.css" />
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute;left:-9999px;top:-9999px;overflow:hidden" aria-hidden="true" focusable="false">
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 20h16"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M7 7l1 12h8l1-12"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 1 1-4 0v-.2a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 1 1 0-4h.2a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a2 2 0 1 1 4 0v.2a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H20a2 2 0 1 1 0 4h-.2a1 1 0 0 0-.9.6z"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 10h4v4h-4z"/><path d="M9 1v3"/><path d="M15 1v3"/><path d="M9 20v3"/><path d="M15 20v3"/><path d="M1 9h3"/><path d="M1 15h3"/><path d="M20 9h3"/><path d="M20 15h3"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M10 9v11"/></symbol>
+    <symbol id="i-panel-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16"/><path d="m7 12 5-5 5 5"/></symbol>
+    <symbol id="i-panel-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="m7 12 5 5 5-5"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+  </svg>
   <header class="topbar">
     <div class="brand">
       <img src="/web/assets/adbflow-logo.svg" alt="ADBFlow" class="brand-logo" />
       <strong>安卓自动化工作台</strong>
       <span style="color:var(--muted)">节点编排界面</span>
+      <button id="toggle-sidebar-btn" class="sidebar-toggle-btn" onclick="toggleSidebar()" title="显示边栏" aria-label="显示边栏">
+        <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sidebar"></use></svg>
+        <span class="sidebar-toggle-pill" id="sidebar-toggle-pill">显示边栏</span>
+      </button>
     </div>
-    <div class="status" id="status">就绪</div>
+    <div class="status status-idle" id="status">
+      <span class="status-dot"></span>
+      <span id="status-text">就绪</span>
+    </div>
     <div class="bar-actions">
-      <button id="toggle-sidebar-btn" onclick="toggleSidebar()"><span class="btn-icon">&#9654;</span>显示节点库</button>
-      <button onclick="refreshDevices()"><span class="btn-icon">&#8635;</span>刷新设备</button>
-      <button onclick="openWorkflowPicker()"><span class="btn-icon">&#128194;</span>加载工作流</button>
-      <button onclick="exportWorkflow()"><span class="btn-icon">&#8681;</span>导出配置</button>
-      <button onclick="createScheduleTask()"><span class="btn-icon">&#9200;</span>创建调度</button>
-      <button onclick="showScheduleList()"><span class="btn-icon">&#128196;</span>调度列表</button>
-      <button class="warn" onclick="clearGraph()"><span class="btn-icon">&#128465;</span>清空画布</button>
-      <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><span class="btn-icon">&#9654;</span>执行工作流</button>
-      <button onclick="openExecutionSettingsModal()"><span class="btn-icon">&#9881;</span>系统设置</button>
+      <button onclick="refreshDevices()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新设备</button>
+      <button onclick="openWorkflowPicker()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder"></use></svg>加载工作流</button>
+      <button onclick="exportWorkflow()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-download"></use></svg>导出配置</button>
+      <button onclick="createScheduleTask()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg>创建调度</button>
+      <button onclick="showScheduleList()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-list"></use></svg>调度列表</button>
+      <button class="warn" onclick="clearGraph()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg>清空画布</button>
+      <button id="run-workflow-btn" class="primary" onclick="runWorkflow()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-play"></use></svg>执行工作流</button>
+      <button onclick="openExecutionSettingsModal()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-settings"></use></svg>系统设置</button>
     </div>
   </header>
 
@@ -95,8 +117,8 @@
             <button id="tab-preview-btn" class="tab-btn" onclick="switchBottomTab('preview')">结果预览</button>
           </div>
           <div class="log-tools">
-            <button id="clear-log-btn" style="height:22px;padding:0 8px" onclick="clearLogs()"><span class="btn-icon">&#128465;</span>清空日志</button>
-            <button id="toggle-bottom-btn" style="height:22px;padding:0 8px" onclick="toggleBottomPanel()"><span class="btn-icon">&#9650;</span>显示面板</button>
+            <button id="clear-log-btn" style="height:22px;padding:0 8px" onclick="clearLogs()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg>清空日志</button>
+            <button id="toggle-bottom-btn" style="height:22px;padding:0 8px" onclick="toggleBottomPanel()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-panel-up"></use></svg>显示面板</button>
           </div>
         </div>
         <div class="bottom-body" id="bottom-body">
@@ -292,19 +314,19 @@
       <div class="modal-body">
         <div class="settings-tabs">
           <button class="tab-btn active" data-settings-tab="execution" onclick="switchSettingsTab('execution')">
-            <span class="settings-tab-icon">&#9881;</span><span>执行设置</span>
+            <span class="settings-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-settings"></use></svg></span><span>执行设置</span>
           </button>
           <button class="tab-btn" data-settings-tab="scheduler" onclick="switchSettingsTab('scheduler')">
-            <span class="settings-tab-icon">&#128197;</span><span>调度设置</span>
+            <span class="settings-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-clock"></use></svg></span><span>调度设置</span>
           </button>
           <button class="tab-btn" data-settings-tab="cleanup" onclick="switchSettingsTab('cleanup')">
-            <span class="settings-tab-icon">&#128451;</span><span>清理与报告</span>
+            <span class="settings-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-trash"></use></svg></span><span>清理与报告</span>
           </button>
           <button class="tab-btn" data-settings-tab="ocradb" onclick="switchSettingsTab('ocradb')">
-            <span class="settings-tab-icon">&#128241;</span><span>OCR 与 ADB</span>
+            <span class="settings-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-cpu"></use></svg></span><span>OCR 与 ADB</span>
           </button>
           <button class="tab-btn" data-settings-tab="frontend" onclick="switchSettingsTab('frontend')">
-            <span class="settings-tab-icon">&#128187;</span><span>前端偏好</span>
+            <span class="settings-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-layout"></use></svg></span><span>前端偏好</span>
           </button>
         </div>
 

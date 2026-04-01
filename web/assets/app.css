@@ -38,6 +38,7 @@
       align-items: center;
       gap: 8px;
       min-width: 220px;
+      flex: 1;
       color: var(--text);
       white-space: nowrap;
     }
@@ -56,6 +57,77 @@
       flex-wrap: wrap;
       justify-content: flex-end;
     }
+    .sidebar-toggle-btn {
+      width: 24px;
+      height: 24px;
+      border: none;
+      background: transparent;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      margin-left: auto;
+      margin-right: 4px;
+      filter: none;
+    }
+    .sidebar-toggle-btn:hover,
+    .sidebar-toggle-btn:focus-visible {
+      border: none;
+      background: transparent;
+      filter: none;
+    }
+    .sidebar-toggle-icon {
+      width: 15px;
+      height: 15px;
+      line-height: 1;
+      color: #b9c3d3;
+      transition: color 0.15s ease;
+    }
+    .sidebar-toggle-icon,
+    .sidebar-toggle-icon use,
+    .sidebar-toggle-icon path,
+    .sidebar-toggle-icon rect,
+    .sidebar-toggle-icon line,
+    .sidebar-toggle-icon polyline,
+    .sidebar-toggle-icon polygon {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .sidebar-toggle-btn:hover .sidebar-toggle-icon,
+    .sidebar-toggle-btn:focus-visible .sidebar-toggle-icon {
+      color: #e8eef8;
+    }
+    .sidebar-toggle-pill {
+      position: absolute;
+      top: 34px;
+      left: 50%;
+      transform: translateX(-50%);
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      font-size: 12px;
+      color: #eef2f9;
+      background: rgba(66, 70, 78, 0.96);
+      border: 1px solid #565d69;
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.28);
+      pointer-events: none;
+      z-index: 8;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.15s ease, visibility 0.15s ease;
+    }
+    .sidebar-toggle-btn:hover .sidebar-toggle-pill,
+    .sidebar-toggle-btn:focus-visible .sidebar-toggle-pill {
+      opacity: 1;
+      visibility: visible;
+    }
 
     button {
       border: 1px solid var(--line);
@@ -66,6 +138,11 @@
       cursor: pointer;
       font-size: 12px;
       height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      line-height: 1;
       transition: all 0.15s ease;
     }
     button:hover {
@@ -74,7 +151,7 @@
     }
     button.primary {
       background: var(--accent);
-      color: #0f1721;
+      color: #ffffff;
       border-color: #68b0ff;
       font-weight: 600;
     }
@@ -90,9 +167,24 @@
     }
     .btn-icon {
       display: inline-block;
-      width: 14px;
-      text-align: center;
-      margin-right: 4px;
+      width: 17px;
+      height: 17px;
+      flex: 0 0 auto;
+      color: inherit;
+    }
+    .btn-icon,
+    .btn-icon use,
+    .btn-icon path,
+    .btn-icon circle,
+    .btn-icon rect,
+    .btn-icon line,
+    .btn-icon polyline,
+    .btn-icon polygon {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
 
     .layout {
@@ -142,6 +234,7 @@
     .group button {
       width: 100%;
       text-align: left;
+      justify-content: flex-start;
       padding-left: 8px;
       height: 32px;
       font-size: 13px;
@@ -524,11 +617,52 @@
       display: none !important;
     }
     .status {
-      color: var(--muted);
-      max-width: 420px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 360px;
+      min-width: 160px;
+      padding: 6px 12px;
+      border: 1px solid #4a4f58;
+      border-radius: 999px;
+      background: #262a31;
+      color: #dbe2ee;
+      line-height: 1;
+    }
+    #status-text {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      font-size: 12px;
+    }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      background: #7f8796;
+      box-shadow: 0 0 0 3px rgba(127, 135, 150, 0.16);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+    .status.status-idle .status-dot {
+      background: #7f8796;
+      box-shadow: 0 0 0 3px rgba(127, 135, 150, 0.16);
+    }
+    .status.status-running .status-dot {
+      background: #f0b84f;
+      box-shadow: 0 0 0 3px rgba(240, 184, 79, 0.18);
+    }
+    .status.status-success .status-dot {
+      background: #4ed18a;
+      box-shadow: 0 0 0 3px rgba(78, 209, 138, 0.18);
+    }
+    .status.status-error .status-dot {
+      background: #f06565;
+      box-shadow: 0 0 0 3px rgba(240, 101, 101, 0.18);
+    }
+    .status.status-warn .status-dot {
+      background: #f0b84f;
+      box-shadow: 0 0 0 3px rgba(240, 184, 79, 0.18);
     }
     .modal {
       position: fixed;
@@ -724,11 +858,31 @@
       color: #ffffff;
     }
     .settings-tab-icon {
-      width: 20px;
-      text-align: center;
-      font-size: 16px;
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       line-height: 1;
       opacity: 0.95;
+    }
+    .settings-tab-icon svg {
+      width: 18px;
+      height: 18px;
+      color: currentColor;
+    }
+    .settings-tab-icon svg use,
+    .settings-tab-icon svg path,
+    .settings-tab-icon svg rect,
+    .settings-tab-icon svg circle,
+    .settings-tab-icon svg line,
+    .settings-tab-icon svg polyline,
+    .settings-tab-icon svg polygon {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
     #execution-settings-modal .schedule-check-field {
       display: flex;
